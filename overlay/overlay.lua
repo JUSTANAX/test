@@ -652,11 +652,30 @@ local function main()
 
     -- Проверка без второго игрока:
     --   _G.OxyLab.simulate({{"SeerChroma",1,"Weapons"}}, {{"Batwing",1,"Weapons"}})
-    Session.simulate = function(mineOffer, theirOffer, drawCards)
+    -- Он же, но локальный игрок - вторая сторона (трейд начал собеседник):
+    --   _G.OxyLab.simulate({{"ZombieK2018",1,"Weapons"}}, {{"Magma_G_2021",3,"Weapons"}}, "player2")
+    -- Завершение трейда, чтобы проверить сброс итогов:
+    --   _G.OxyLab.finish()
+    Session.simulate = function(mineOffer, theirOffer, opts)
+        -- Третий аргумент исторически был просто drawCards = false, и старые
+        -- вызовы должны продолжать работать. Поэтому он разбирается по типу:
+        --   false            - не рисовать карточки (как раньше)
+        --   "player2"        - положить локального игрока во ВТОРУЮ сторону
+        --   {side=2, drawCards=false} - и то и другое
+        local drawCards, asPlayer2 = true, false
+        if opts == false then
+            drawCards = false
+        elseif type(opts) == "string" then
+            asPlayer2 = opts:lower() == "player2"
+        elseif type(opts) == "table" then
+            drawCards = opts.drawCards ~= false
+            asPlayer2 = opts.side == 2 or opts.side == "player2"
+        end
+
         -- drawCards ~= false: рисуем и сами карточки так же, как это делает
         -- игра, иначе проверка обходит ItemModule.DisplayItem - ровно тот код,
         -- который теоретически мог бы снести наши ярлыки.
-        if drawCards ~= false then
+        if drawCards then
             pcall(function()
                 local Sync = require(ReplicatedStorage.Database.Sync)
                 local ItemModule = require(ReplicatedStorage.Modules.ItemModule)
@@ -688,10 +707,31 @@ local function main()
             end)
         end
 
-        onUpdateTrade({
-            Player1 = { Player = LocalPlayer, Offer = mineOffer or {} },
-            Player2 = { Player = { Name = "ТестОппонент" }, Offer = theirOffer or {} },
-        })
+        -- Кто в state окажется Player1, решает не наш код, а игра: там
+        -- первым идёт тот, кто начал трейд. Пока хук всегда клал локального
+        -- игрока в Player1, ветка Player2 в onUpdateTrade оставалась
+        -- непроверяемой - живые трейды её тоже не задели.
+        local me = { Player = LocalPlayer, Offer = mineOffer or {} }
+        local them = { Player = { Name = "ТестОппонент" }, Offer = theirOffer or {} }
+        if asPlayer2 then
+            onUpdateTrade({ Player1 = them, Player2 = me })
+        else
+            onUpdateTrade({ Player1 = me, Player2 = them })
+        end
+    end
+
+    --- Завершение трейда: гасим окно ровно так, как это делает игра.
+    ---
+    --- Специально НЕ зовём очистку напрямую: смысл проверки в том, чтобы
+    --- сработал настоящий слушатель Visible. Позвали бы напрямую - проверка
+    --- была бы зелёной даже со сломанным слушателем.
+    Session.finish = function()
+        if not (TradeRoot and TradeRoot.Visible) then
+            warnf("окно трейда и так закрыто — сброс проверять не на чем")
+            return false
+        end
+        TradeRoot.Visible = false
+        return true
     end
 
     local stats = Values.stats or {}
