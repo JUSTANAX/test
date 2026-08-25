@@ -127,28 +127,50 @@ def name_candidates(base: str, item_type: str, year: str, event: str) -> list[st
         Pumpkin (2017)                  - год в круглых скобках
         Blue Pumpkin [HALLOWS2018]      - событие и год в квадратных
     Без этих вариантов промахивались целые пласты сезонных предметов.
+
+    ПОРЯДОК ВАЖНЕЕ САМОГО СПИСКА. Перебор у вызывающего останавливается на
+    первом попадании, поэтому голое имя, стоящее первым, забирало матч себе,
+    даже когда на сайте рядом лежал точный вариант. Так пять игровых
+    «зомби» схлопнулись на общий «Zombie» = 7, хотя сайт различает
+    Zombie (Knife) = 1, Zombie (Gun) = 5 и Zombie (2023) = 3; Elf2019
+    получил 25 вместо 625, а Magma (Gun) - 3 вместо 13.
+
+    Теперь голое имя уходит в конец, но только когда есть чем уточнить: при
+    пустых type/year уточнять нечем, и порядок остаётся прежним.
     """
-    out = [base]
+    stems = [base]
 
     # Обратный случай: год уже вшит в игровое имя, а на сайте его нет.
     # "Skeleton Key 2018" -> "Skeleton Key".
     stripped = re.sub(r"\s+(19|20)\d{2}$", "", base).strip()
     if stripped and stripped != base:
-        out.append(stripped)
+        stems.append(stripped)
 
-    for stem in list(out):
-        if item_type in ("Knife", "Gun"):
-            out.append(f"{stem} ({item_type})")
+    # Уточнённые - от самого узкого к самому широкому. Тип И год вместе
+    # («Gingerbread (Knife) (2019)» = 85 против «Gingerbread» = 1) стоят
+    # первыми: это единственное написание, различающее нож и пушку одного года.
+    precise: list[str] = []
+    plural: list[str] = []
+    for stem in stems:
+        typed = f"{stem} ({item_type})" if item_type in ("Knife", "Gun") else None
+        for form in ([typed] if typed else []):
+            if year:
+                precise.append(f"{form} ({year})")
+                if event:
+                    precise.append(f"{form} [{event.upper()}{year}]")
         if year:
-            out.append(f"{stem} ({year})")
+            precise.append(f"{stem} ({year})")
             if event:
-                out.append(f"{stem} [{event.upper()}{year}]")
-                out.append(f"{stem} {event} {year}")
+                precise.append(f"{stem} [{event.upper()}{year}]")
+                precise.append(f"{stem} {event} {year}")
+        # Тип без года - шире, чем год: «Zombie (Knife)» покрывает все годы,
+        # а «Zombie (2023)» - ровно один. Поэтому идёт после.
+        if typed:
+            precise.append(typed)
         # Единственное/множественное: "Checker" <-> "Checkers".
-        if stem.endswith("s"):
-            out.append(stem[:-1])
-        else:
-            out.append(stem + "s")
+        plural.append(stem[:-1] if stem.endswith("s") else stem + "s")
+
+    out = precise + stems + plural
 
     seen_v: set[str] = set()
     uniq = []
@@ -157,6 +179,74 @@ def name_candidates(base: str, item_type: str, year: str, event: str) -> list[st
             seen_v.add(v)
             uniq.append(v)
     return uniq
+
+
+ORIGIN_RE = re.compile(r"\s*([A-Za-z]+)?\s*((?:19|20)\d{2})")
+
+
+def origin_parts(origin: str) -> tuple[str, str]:
+    """
+    Событие и год из подписи происхождения: «Halloween 2021 (Tier 18)» ->
+    ("halloween", "2021").
+
+    Это самый надёжный различитель, который даёт сайт, и по именам его не
+    восстановить. На сайте лежат ДВА предмета с одинаковым именем «Zombie»:
+    за 7 из Halloween 2021 и за 10 из Halloween 2017. Никакой перебор
+    написаний их не разведёт - оба канонизируются в одну строку. А в игре им
+    соответствуют разные ключи (Zombie_K_2021 и Zombie), и цена отличается.
+    """
+    m = ORIGIN_RE.match(origin or "")
+    if not m:
+        return "", ""
+    return (m.group(1) or "").lower(), m.group(2)
+
+
+def name_qualifiers(sv_name: str) -> tuple[str, str]:
+    """Тип и год, зашитые в имя на сайте: «Gingerbread (Knife) (2019)» -> ("Knife", "2019")."""
+    t = ""
+    if "(Knife)" in sv_name:
+        t = "Knife"
+    elif "(Gun)" in sv_name:
+        t = "Gun"
+    m = re.search(r"[(\[][A-Z]*((?:19|20)\d{2})[)\]]", sv_name)
+    return t, (m.group(1) if m else "")
+
+
+def score_candidate(hit: dict, expected_cat: str | None, g_type: str,
+                    g_year: str, g_event: str) -> int:
+    """
+    Насколько запись сайта подходит игровому предмету.
+
+    Раньше выбор был «первый подошедший вариант написания», и это давало
+    систематические ошибки: пять игровых «зомби» садились на общий «Zombie»,
+    Elf2019 забирал «Elf» за 25 вместо «Elf (2019)» за 625. Год и тип оружия
+    решают спор надёжнее любого порядка перебора, поэтому теперь кандидаты
+    собираются все, а побеждает набравший больше очков.
+
+    Несовпадение штрафуется сильнее, чем совпадение поощряется: подставить
+    чужую цену хуже, чем не подставить никакой.
+    """
+    o_event, o_year = origin_parts(hit.get("origin", ""))
+    n_type, n_year = name_qualifiers(hit.get("name", ""))
+    year = o_year or n_year
+    score = 0
+
+    # Категория выведена из редкости в самой игре - признак сильный, и весить
+    # он должен больше, чем «(Knife)» в имени. Иначе классический Ghost за 8
+    # из vintages проигрывал легендарному «Ghost (Knife)» за 5 просто потому,
+    # что у второго тип оружия написан в имени.
+    if expected_cat:
+        score += 6 if hit.get("category") == expected_cat else -3
+
+    if g_year and year:
+        score += 10 if year == g_year else -10
+    if g_event and o_event:
+        score += 2 if o_event == g_event.lower() else -4
+
+    if g_type in ("Knife", "Gun") and n_type:
+        score += 5 if n_type == g_type else -8
+
+    return score
 
 
 def sv_payload(hit: dict) -> dict:
@@ -188,10 +278,20 @@ def build_sv_index(sv: dict) -> tuple[dict, dict, dict]:
 
     for item in sv["items"].values():
         c = canon(item["name"])
+        if not c:
+            continue
         by_cat_name[(item["category"], c)] = item
         by_name[c].append(item)
         for alias in item.get("aliases") or []:
-            by_alias[canon(alias)].append(item)
+            ca = canon(alias)
+            # Пустой ключ - это не совпадение, а мусор. У сотни записей сайта
+            # среди алиасов лежат " " и ",", и canon() схлопывает их в "".
+            # Игровая godly-пушка Emptybringer называется в игре литералом
+            # "???", который канонизируется туда же, и она забирала by_alias[""]
+            # [0] = «Bauble Set» за 875 - цену рождественского сета, к предмету
+            # отношения не имеющего.
+            if ca:
+                by_alias[ca].append(item)
 
     return by_cat_name, by_name, by_alias
 
@@ -236,43 +336,52 @@ def main() -> int:
             "ambiguous": False,
         }
 
-        variants = name_candidates(name, g.get("type", ""), g.get("year", ""), g.get("event", ""))
+        g_type = g.get("type", "")
+        g_year = str(g.get("year", "") or "")
+        g_event = g.get("event", "") or ""
+        variants = name_candidates(name, g_type, g_year, g_event)
+
+        # Собираем ВСЕХ кандидатов по всем написаниям, а не берём первого
+        # подошедшего. Порядок написаний остаётся подсказкой (rank), но спор
+        # решают год, событие и тип оружия - см. score_candidate.
+        pool: list[tuple[dict, int]] = []
+        seen_ids: set[int] = set()
+        for rank, v in enumerate(variants):
+            for cand in by_name.get(canon(v), ()):
+                if id(cand) not in seen_ids:
+                    seen_ids.add(id(cand))
+                    pool.append((cand, rank))
 
         hit = None
-        # Сначала пробуем все варианты имени в ожидаемой категории - это самый
-        # надёжный ключ. Только если ни один не подошёл, расширяем поиск на все
-        # категории, потом на алиасы.
-        if expected_cat:
-            for v in variants:
-                key = (expected_cat, canon(v))
-                if key in by_cat_name:
-                    hit = by_cat_name[key]
-                    rec["method"] = "имя+категория" if v == name else "имя+тип/год+категория"
-                    rec["matchedVariant"] = v
-                    break
+        if pool:
+            scored = [
+                (score_candidate(c, expected_cat, g_type, g_year, g_event), -rank, c)
+                for c, rank in pool
+            ]
+            best_score, neg_rank, hit = max(scored, key=lambda x: (x[0], x[1]))
+            matched_variant = variants[-neg_rank]
+            rec["matchedVariant"] = matched_variant
+            rec["method"] = ("имя+категория" if matched_variant == name
+                             else "имя+тип/год+категория")
+            rec["score"] = best_score
 
-        if hit is None:
-            for v in variants:
-                cv = canon(v)
-                if cv in by_name:
-                    candidates = by_name[cv]
-                    hit = candidates[0]
-                    rec["method"] = "только имя" if v == name else "имя+тип/год"
-                    rec["matchedVariant"] = v
-                    rec["ambiguous"] = len(candidates) > 1
-                    if rec["ambiguous"]:
-                        rec["candidates"] = [
-                            {"category": x["category"], "value": x["value"]} for x in candidates
-                        ]
-                    # Совпадение из ЧУЖОЙ категории - не доказательство.
-                    # Silver Vampire's Axe в игре Unique, на сайте у него цены
-                    # нет, и фолбэк подставлял ему 1450 от древнего Vampire's
-                    # Axe. Один кандидат вместо нескольких не делает такую
-                    # подстановку достовернее, поэтому ambiguous тут не спасал.
-                    if expected_cat and hit["category"] != expected_cat:
-                        rec["lowConfidence"] = True
-                        rec["wrongCategory"] = hit["category"]
-                    break
+            # Несколько кандидатов с одинаковым лучшим счётом - выбор не
+            # обоснован, и это надо видеть в отчёте, а не замалчивать.
+            top = [c for s, _, c in scored if s == best_score]
+            rec["ambiguous"] = len(top) > 1
+            if rec["ambiguous"]:
+                rec["candidates"] = [
+                    {"category": x["category"], "value": x["value"], "origin": x.get("origin", "")}
+                    for x in top
+                ]
+
+            # Совпадение из ЧУЖОЙ категории - не доказательство. Silver
+            # Vampire's Axe в игре Unique, на сайте у него цены нет, и фолбэк
+            # подставлял ему 1450 от древнего Vampire's Axe.
+            if expected_cat and hit["category"] != expected_cat:
+                rec["lowConfidence"] = True
+                rec["wrongCategory"] = hit["category"]
+                rec["method"] = "имя без категории"
 
         if hit is None and c in by_alias:
             candidates = by_alias[c]
@@ -317,17 +426,31 @@ def main() -> int:
         # Год у петов в поле не хранится - только в ключе (BluePumpkin19).
         pet_year = g.get("year") or year_from_key(key)
 
-        hit = by_cat_name.get((target_cat, c))
-        if hit:
-            rec["method"] = "имя+категория"
-        else:
-            for v in name_candidates(name, "", pet_year, g.get("event", "")):
-                probe = by_cat_name.get((target_cat, canon(v)))
-                if probe:
-                    hit = probe
-                    rec["method"] = "имя+год"
-                    rec["matchedVariant"] = v
-                    break
+        # Голое имя НЕ забирает матч себе просто потому, что стоит первым.
+        # Пет Elf2019 так получал «Elf» за 25, хотя рядом лежал «Elf (2019)»
+        # за 625 - занижение в 25 раз. Выбор, как и у оружия, идёт по счёту:
+        # решает год, а не порядок написаний.
+        pet_variants = name_candidates(name, "", pet_year, g.get("event", ""))
+        pool: list[tuple[dict, int]] = []
+        seen_ids = set()
+        for rank, v in enumerate(pet_variants):
+            for cand in by_name.get(canon(v), ()):
+                if cand.get("category") == target_cat and id(cand) not in seen_ids:
+                    seen_ids.add(id(cand))
+                    pool.append((cand, rank))
+
+        hit = None
+        if pool:
+            scored = [
+                (score_candidate(c, target_cat, "", pet_year, g.get("event", "") or ""), -rank, c)
+                for c, rank in pool
+            ]
+            best_score, neg_rank, hit = max(scored, key=lambda x: (x[0], x[1]))
+            matched_variant = pet_variants[-neg_rank]
+            rec["matchedVariant"] = matched_variant
+            rec["method"] = "имя+категория" if matched_variant == name else "имя+год"
+            rec["score"] = best_score
+            rec["ambiguous"] = sum(1 for s, _, _ in scored if s == best_score) > 1
 
         # Ключ без года (BlueP, RedP) - это оригинальный выпуск. На сайте он
         # лежит под самым ранним годом, поэтому берём его, а не первый

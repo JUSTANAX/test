@@ -43,6 +43,9 @@ local COLORS = {
 
 -- Объявляем заранее: заполняются в resolveTradeGui, но нужны функциям выше.
 local YourOffer, TheirOffer, YourContainer, TheirContainer
+-- Корень окна трейда. Нужен отдельно от офферов: по его Visible мы понимаем,
+-- что трейд кончился, каким бы способом он ни кончился.
+local TradeRoot
 
 local function log(...)
     print("[OxyLab]", ...)
@@ -332,6 +335,13 @@ local function placeTag(slot, tag)
 end
 
 --- Рисует цену предмета. data = nil - предмет неизвестен.
+---
+--- ЦЕНА ЗА ШТУКУ, А НЕ ЗА СТОПКУ - это решение менеджера, не недосмотр.
+--- При стопке x3 по 105 на иконке стоит 105, а в итог стороны уходит 315,
+--- поэтому цифры на иконках намеренно НЕ складываются в итог. Количество
+--- игра пишет сама в углу слота («x3»), дублировать его мы не стали:
+--- договорённость была «только цена, мелко, без лишних знаков».
+--- Умножение на количество живёт в summarise().
 local function paintTag(slot, data)
     local tag = getTag(slot)
     if not tag then
@@ -496,6 +506,7 @@ local function resolveTradeGui()
         return false, "не найдены контейнеры предметов"
     end
 
+    TradeRoot = trade
     YourOffer, TheirOffer = yours, theirs
     YourContainer, TheirContainer = yours.Container, theirs.Container
     return true
@@ -615,14 +626,29 @@ local function main()
         end
     end))
 
+    local function wipe()
+        hideTags(YourContainer)
+        hideTags(TheirContainer)
+        clearTotals()
+    end
+
     local declineRemote = tradeFolder:FindFirstChild("DeclineTrade")
     if declineRemote then
-        table.insert(Session.connections, declineRemote.OnClientEvent:Connect(function()
-            hideTags(YourContainer)
-            hideTags(TheirContainer)
-            clearTotals()
-        end))
+        table.insert(Session.connections, declineRemote.OnClientEvent:Connect(wipe))
     end
+
+    -- DeclineTrade ловит только ОТКАЗ. Удачно завершённый трейд шлёт что-то
+    -- другое, и суммы прошлого трейда оставались висеть рядом с заголовками
+    -- до первого UpdateTrade следующего - то есть некоторое время показывали
+    -- чужие числа как свои. Гадать, какой именно ремоут отвечает за приём,
+    -- незачем: окно трейда всё равно закрывается при любом исходе - приняли,
+    -- отказались, собеседник вышел, - поэтому смотрим прямо на него.
+    table.insert(Session.connections,
+        TradeRoot:GetPropertyChangedSignal("Visible"):Connect(function()
+            if not TradeRoot.Visible then
+                wipe()
+            end
+        end))
 
     -- Проверка без второго игрока:
     --   _G.OxyLab.simulate({{"SeerChroma",1,"Weapons"}}, {{"Batwing",1,"Weapons"}})
