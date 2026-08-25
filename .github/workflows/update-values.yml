@@ -130,13 +130,38 @@ jobs:
           PY
 
       - name: Закоммитить, если что-то изменилось
+        # Публикация с повторами и rebase. Голый push здесь ломался: если в
+        # тот же момент кто-то пушит руками или накладываются два прогона,
+        # он отклоняется как non-fast-forward и вся сборка краснеет, хотя
+        # цены уже собраны и проверены.
         run: |
           if git diff --quiet -- data/mm2_values.json; then
             echo "Цены не изменились, коммит не нужен."
             exit 0
           fi
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/mm2_values.json
           git commit -m "Свежие цены $(date -u +%Y-%m-%d)"
-          git push
+
+          for attempt in 1 2 3; do
+            # Забираем чужие коммиты и кладём свой поверх: наш коммит трогает
+            # только data/, так что конфликтовать ему не с чем.
+            git pull --rebase origin "${GITHUB_REF_NAME}" || {
+              echo "попытка $attempt: rebase не удался"
+              git rebase --abort || true
+              sleep 5
+              continue
+            }
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "Опубликовано с попытки $attempt."
+              exit 0
+            fi
+            echo "попытка $attempt: push отклонён, повторяю"
+            sleep 5
+          done
+
+          echo "Не удалось опубликовать за 3 попытки."
+          echo "Цены собраны и проверены, но остались только в этом прогоне."
+          exit 1
