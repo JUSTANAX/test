@@ -27,6 +27,10 @@ local CONFIG = {
 
     SHOW_DETAILS = true,
 
+    -- Клавиша показать/скрыть окно настроек. Правый Ctrl выбран потому, что
+    -- в MM2 он ничем не занят, в отличие от Insert и F-ряда.
+    TOGGLE_KEY = Enum.KeyCode.RightControl,
+
     -- Зеркало на GitHub. Если недоступно, оверлей молча падает на локальный
     -- файл - трейд не должен ломаться из-за сети.
     VALUES_URL = "https://raw.githubusercontent.com/JUSTANAX/test/main/data/mm2_values.json",
@@ -232,6 +236,9 @@ local function teardown(previous)
     for _, gui in ipairs(previous.windUiGuis or {}) do
         pcall(function() gui:Destroy() end)
     end
+    if previous.toggleButton then
+        pcall(function() previous.toggleButton:Destroy() end)
+    end
     -- Ярлыки принадлежат игровому GUI и переживают перезапуск скрипта,
     -- поэтому их надо снять явно.
     local ok, pg = pcall(function() return LocalPlayer:FindFirstChild("PlayerGui") end)
@@ -421,6 +428,44 @@ local function shortReason(data)
         return "не подтверждена"
     end
     return "без цены"
+end
+
+--- Сколько дней прошло с даты вида ГГГГ-ММ-ДД. nil, если дата не разобралась.
+local function daysSince(iso)
+    if type(iso) ~= "string" then
+        return nil
+    end
+    local y, m, d = iso:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)")
+    if not y then
+        return nil
+    end
+    -- Полдень, чтобы часовые пояса не давали ошибку в сутки туда-сюда.
+    local stamp = os.time({ year = tonumber(y), month = tonumber(m), day = tonumber(d), hour = 12 })
+    return math.floor(os.difftime(os.time(), stamp) / 86400)
+end
+
+--- Человеческий возраст цены и цвет по свежести.
+---
+--- Цены по категориям расходятся сильно: годли бывают вчерашние, а commons
+--- месячной давности. Одна дата на весь файл это скрывала, поэтому возраст
+--- показываем у каждого предмета отдельно.
+local function formatAge(iso)
+    local days = daysSince(iso)
+    if not days then
+        return "дата неизвестна", COLORS.muted
+    end
+    local color = COLORS.muted
+    if days > 21 then
+        color = COLORS.bad
+    elseif days > 7 then
+        color = COLORS.accent
+    end
+    if days <= 0 then
+        return "сегодня", color
+    elseif days == 1 then
+        return "вчера", color
+    end
+    return days .. " дн. назад", color
 end
 
 --- Стрелка тренда с цветом. Пустая строка, если тренда нет.
@@ -957,6 +1002,185 @@ local function positionPanel()
 end
 
 --============================================================================
+-- Всплывающее уведомление
+--
+-- Своё, а не WindUI:Notify: сообщить о состоянии нужно в том числе когда
+-- WindUI не загрузился - именно тогда это и важнее всего. Заодно выглядит
+-- так же, как панели, теми же спрайтами.
+--============================================================================
+
+local function toast(title, text, accent, seconds)
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then
+        return
+    end
+
+    local screen = pg:FindFirstChild("OxyLabToast")
+    if not screen then
+        screen = Instance.new("ScreenGui")
+        screen.Name = "OxyLabToast"
+        screen.ResetOnSpawn = false
+        screen.IgnoreGuiInset = true
+        screen.DisplayOrder = 10000
+        screen.Parent = pg
+    end
+    for _, old in ipairs(screen:GetChildren()) do
+        old:Destroy()
+    end
+
+    local card = Instance.new("Frame")
+    card.Name = "Toast"
+    card.AnchorPoint = Vector2.new(0.5, 0)
+    card.Position = UDim2.new(0.5, 0, 0, 24)
+    card.Size = UDim2.new(0, 320, 0, 62)
+    card.BackgroundTransparency = 1
+    card.Parent = screen
+
+    paintShadow(card)
+    paintSurface(card, COLORS.bg, 0, RADIUS_ELEMENT)
+
+    -- Цветная полоска слева: тем же приёмом, что и в списке неучтённого.
+    local bar = Instance.new("Frame")
+    bar.Name = "Bar"
+    bar.Position = UDim2.new(0, 12, 0, 14)
+    bar.Size = UDim2.new(0, 3, 1, -28)
+    bar.BackgroundColor3 = accent or COLORS.primary
+    bar.BorderSizePixel = 0
+    bar.Parent = card
+    local barCorner = Instance.new("UICorner")
+    barCorner.CornerRadius = UDim.new(1, 0)
+    barCorner.Parent = bar
+
+    local head = Instance.new("TextLabel")
+    head.BackgroundTransparency = 1
+    head.Position = UDim2.new(0, 24, 0, 12)
+    head.Size = UDim2.new(1, -36, 0, 18)
+    head.Font = Enum.Font.GothamBold
+    head.TextSize = 15
+    head.TextColor3 = COLORS.text
+    head.TextXAlignment = Enum.TextXAlignment.Left
+    head.TextTruncate = Enum.TextTruncate.AtEnd
+    head.Text = title
+    head.Parent = card
+
+    local body = Instance.new("TextLabel")
+    body.BackgroundTransparency = 1
+    body.Position = UDim2.new(0, 24, 0, 31)
+    body.Size = UDim2.new(1, -36, 0, 20)
+    body.Font = Enum.Font.Gotham
+    body.TextSize = 13
+    body.TextColor3 = COLORS.muted
+    body.TextXAlignment = Enum.TextXAlignment.Left
+    body.TextYAlignment = Enum.TextYAlignment.Top
+    body.TextWrapped = true
+    body.Text = text
+    body.Parent = card
+
+    task.delay(seconds or 5, function()
+        if card.Parent then
+            card:Destroy()
+        end
+    end)
+    return card
+end
+
+--============================================================================
+-- Плавающая кнопка показать/скрыть
+--============================================================================
+
+--- Кнопка живёт в своём ScreenGui, поэтому не зависит ни от окна трейда,
+--- ни от WindUI. Перетаскивается мышью и пальцем.
+local function buildToggleButton(onClick)
+    local pg = LocalPlayer:FindFirstChild("PlayerGui")
+    if not pg then
+        return nil
+    end
+
+    local old = pg:FindFirstChild("OxyLabButton")
+    if old then
+        old:Destroy()
+    end
+
+    local screen = Instance.new("ScreenGui")
+    screen.Name = "OxyLabButton"
+    screen.ResetOnSpawn = false
+    screen.IgnoreGuiInset = true
+    screen.DisplayOrder = 9999
+    screen.Parent = pg
+
+    local btn = Instance.new("TextButton")
+    btn.Name = "Toggle"
+    btn.AnchorPoint = Vector2.new(1, 0)
+    btn.Position = UDim2.new(1, -18, 0, 18)
+    btn.Size = UDim2.new(0, 124, 0, 38)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.Parent = screen
+
+    paintShadow(btn)
+    paintSurface(btn, COLORS.bg, 0, RADIUS_ELEMENT)
+
+    local dot = Instance.new("Frame")
+    dot.Name = "Dot"
+    dot.AnchorPoint = Vector2.new(0, 0.5)
+    dot.Position = UDim2.new(0, 14, 0.5, 0)
+    dot.Size = UDim2.new(0, 8, 0, 8)
+    dot.BackgroundColor3 = COLORS.primary
+    dot.BorderSizePixel = 0
+    dot.Parent = btn
+    local dotCorner = Instance.new("UICorner")
+    dotCorner.CornerRadius = UDim.new(1, 0)
+    dotCorner.Parent = dot
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.BackgroundTransparency = 1
+    label.AnchorPoint = Vector2.new(0, 0.5)
+    label.Position = UDim2.new(0, 30, 0.5, 0)
+    label.Size = UDim2.new(1, -40, 1, 0)
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 14
+    label.TextColor3 = COLORS.text
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Center
+    label.TextTruncate = Enum.TextTruncate.AtEnd
+    label.Text = "OxyLab"
+    label.Parent = btn
+
+    -- Перетаскивание. Клик засчитываем только если палец/мышь почти не
+    -- сдвинулись, иначе перетаскивание каждый раз открывало бы окно.
+    local dragging, dragStart, startPos, moved = false, nil, nil, 0
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            dragging, dragStart, startPos, moved = true, input.Position, btn.Position, 0
+        end
+    end)
+    btn.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+            or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            moved = math.max(moved, math.abs(d.X) + math.abs(d.Y))
+            btn.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    btn.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+            or input.UserInputType == Enum.UserInputType.Touch then
+            if dragging and moved < 6 then
+                onClick()
+            end
+            dragging = false
+        end
+    end)
+
+    return screen, btn
+end
+
+--============================================================================
 -- Панель деталей предмета (слева, по нажатию на ярлык)
 --============================================================================
 
@@ -1087,7 +1311,7 @@ local function buildDetailsPanel()
     UI.detail_trend = trend
 
     -- Остальные поля
-    local infoCard = buildCard(body, 3, 0, 190)
+    local infoCard = buildCard(body, 3, 0, 217)
     UI.detail_rows = {
         demand = detailRow(infoCard, 1, "Спрос"),
         rarity = detailRow(infoCard, 2, "Редкость сайта"),
@@ -1095,6 +1319,7 @@ local function buildDetailsPanel()
         flip = detailRow(infoCard, 4, "Перепродажа"),
         rise = detailRow(infoCard, 5, "Шанс роста"),
         gameRarity = detailRow(infoCard, 6, "Класс в игре"),
+        age = detailRow(infoCard, 7, "Цена от"),
     }
 
     local originCard = buildCard(body, 4)
@@ -1209,6 +1434,15 @@ function showDetails(data, fallbackName)
     put("flip", data and data.flip)
     put("rise", data and data.rise, "%")
     put("gameRarity", data and data.gameRarity)
+
+    -- Возраст цены именно этого предмета, с подсветкой по свежести.
+    local ageLabel = UI.detail_rows.age
+    if ageLabel then
+        local itemDate = data and data.date or (Values and Values.sourceUpdatedIso)
+        local text, color = formatAge(itemDate)
+        ageLabel.Text = text
+        ageLabel.TextColor3 = color
+    end
 
     UI.detail_origin.Text = (data and data.origin) or "неизвестно"
     UI.detail_aliases.Text = (data and data.aliases) and ("Также зовут: " .. data.aliases) or ""
@@ -1429,6 +1663,20 @@ end
 -- Запуск
 --============================================================================
 
+--- Описание источника. Дата подаётся как «самая старая», потому что она
+--- именно такая: категории обновляются вразнобой, и одна дата на весь файл
+--- без этой оговорки выглядит свежее, чем есть.
+local function sourceDesc(values)
+    local s = (values and values.stats) or {}
+    local iso = values and values.sourceUpdatedIso
+    return string.format(
+        "Самая старая цена: %s (%s)\nЗагружено из: %s\nС ценой: %d   Бартер: %d   Без цены: %d",
+        tostring(iso or "неизвестно"),
+        (formatAge(iso)),
+        tostring((values and values.__source) or "?"),
+        s.priced or 0, s.barter or 0, s.noValue or 0)
+end
+
 local function buildWindow(WindUI)
     local stats = Values.stats or {}
 
@@ -1448,7 +1696,11 @@ local function buildWindow(WindUI)
         Folder = "OxyLab",
         Author = "ценности Supreme Values",
         Topbar = { Height = 40, ButtonsType = "Mac" },
-        OpenButton = { Title = "OxyLab", Enabled = true, Draggable = true },
+        -- Встроенная кнопка отключена в пользу своей: та рисуется теми же
+        -- спрайтами, что и панели, и её поведением мы управляем полностью.
+        -- Со встроенной всё в порядке - при желании вернуть достаточно
+        -- заменить эту строку на Enabled = true и убрать buildToggleButton.
+        OpenButton = { Enabled = false },
     })
     UI.window = Window
     Session.window = Window
@@ -1591,41 +1843,36 @@ local function buildWindow(WindUI)
 
     UI.source = SourceTab:Paragraph({
         Title = "Supreme Values",
-        Desc = string.format(
-            "Цены от: %s\nЗагружено из: %s\nС ценой: %d   Бартер: %d   Без цены: %d",
-            tostring(Values.sourceUpdatedIso or "неизвестно"),
-            tostring(Values.__source or "?"),
-            stats.priced or 0, stats.barter or 0, stats.noValue or 0
-        ),
+        Desc = sourceDesc(Values),
     })
 
     SourceTab:Button({
-        Title = "Перезагрузить цены",
+        -- Название честное: кнопка перекачивает файл, а не заново собирает
+        -- цены. Если на сервере лежит тот же файл - свежее ничего не станет,
+        -- и говорить «обновлено» было бы обманом.
+        Title = "Перекачать файл цен",
         Icon = "refresh-cw",
         Callback = function()
+            local wasIso = Values and Values.sourceUpdatedIso
             local fresh, err = loadValues()
-            if fresh then
-                Values = fresh
-                local s = fresh.stats or {}
-                pcall(function()
-                    UI.source:SetDesc(string.format(
-                        "Цены от: %s\nЗагружено из: %s\nС ценой: %d   Бартер: %d   Без цены: %d",
-                        tostring(fresh.sourceUpdatedIso or "неизвестно"),
-                        tostring(fresh.__source or "?"),
-                        s.priced or 0, s.barter or 0, s.noValue or 0))
-                end)
-                WindUI:Notify({
-                    Title = "OxyLab",
-                    Content = "Цены обновлены (" .. tostring(fresh.__source) .. ")",
-                    Icon = "check",
-                })
-            else
-                WindUI:Notify({
-                    Title = "OxyLab",
-                    Content = "Не вышло: " .. tostring(err),
-                    Icon = "trash",
-                })
+            if not fresh then
+                WindUI:Notify({ Title = "OxyLab", Content = "Не вышло: " .. tostring(err), Icon = "trash" })
+                return
             end
+
+            Values = fresh
+            pcall(function() UI.source:SetDesc(sourceDesc(fresh)) end)
+
+            local nowIso = fresh.sourceUpdatedIso
+            local changed = nowIso ~= wasIso
+            WindUI:Notify({
+                Title = "OxyLab",
+                Content = changed
+                    and ("Цены обновились: " .. tostring(wasIso) .. " → " .. tostring(nowIso))
+                    or ("Файл перекачан, но цены те же (" .. formatAge(nowIso) .. ")"),
+                Icon = changed and "check" or "copy",
+                Duration = 6,
+            })
         end,
     })
 
@@ -1720,12 +1967,26 @@ local function main()
 
     -- Три шага раздельно: иначе непонятно, что именно упало - сеть,
     -- компиляция или сама библиотека.
+    -- WindUI весит 1.35 МБ, и обрыв TLS на такой закачке случается регулярно
+    -- («schannel: failed to receive handshake»). Одна попытка означала окно
+    -- настроек через раз, поэтому пробуем несколько.
     local WindUI
-    local okFetch, source = pcall(function()
-        return game:HttpGet(CONFIG.WINDUI_URL, true)
-    end)
+    local okFetch, source
+    for attempt = 1, 3 do
+        okFetch, source = pcall(function()
+            return game:HttpGet(CONFIG.WINDUI_URL, true)
+        end)
+        if okFetch and type(source) == "string" and #source > 0 then
+            break
+        end
+        if attempt < 3 then
+            warnf("WindUI: попытка " .. attempt .. " не удалась, повторяю")
+            task.wait(attempt)
+        end
+    end
+
     if not okFetch or type(source) ~= "string" or #source == 0 then
-        warnf("WindUI: не скачался — " .. tostring(source))
+        warnf("WindUI: не скачался за 3 попытки — " .. tostring(source))
     else
         -- Третье значение обязательно: loadstring при ошибке возвращает
         -- (nil, текст), значит pcall отдаёт (true, nil, текст). Без него в
@@ -1835,6 +2096,22 @@ local function main()
         })
     end
 
+    -- Клавиша показать/скрыть. Вешаем сами через UserInputService, а не через
+    -- Window:SetToggleKey: своя подписка попадает в Session.connections и
+    -- корректно снимается при перезапуске скрипта.
+    local UserInputService = game:GetService("UserInputService")
+    table.insert(Session.connections,
+        UserInputService.InputBegan:Connect(function(input, processed)
+            -- processed = игрок печатает в чате; горячую клавишу тогда не ловим
+            if processed or input.KeyCode ~= CONFIG.TOGGLE_KEY then
+                return
+            end
+            local w = UI.window
+            if w then
+                pcall(function() w:Toggle() end)
+            end
+        end))
+
     -- Смена разрешения или переход в полноэкранный режим не поднимает
     -- UpdateTrade, поэтому позицию панели пересчитываем отдельно.
     local camera = workspace.CurrentCamera
@@ -1848,6 +2125,32 @@ local function main()
     Session.details = function(itemId, itemType)
         showDetails(lookup(itemType or "Weapons", itemId), tostring(itemId))
     end
+
+    -- Кнопка показать/скрыть. Ставим после WindUI: если окна нет, кнопка
+    -- честно скажет об этом, а не будет молча ничего не делать.
+    local btnScreen = buildToggleButton(function()
+        if UI.window then
+            pcall(function() UI.window:Toggle() end)
+        else
+            toast("Окно настроек недоступно",
+                "WindUI не загрузился. Ярлыки и панели при этом работают.",
+                COLORS.down, 5)
+        end
+    end)
+    if btnScreen then
+        Session.toggleButton = btnScreen
+    end
+
+    local stats = Values.stats or {}
+    toast(
+        "OxyLab загружен",
+        string.format("%d предметов, %d с ценой  •  %s\nОкно настроек — правый Ctrl",
+            (stats.weapons or 0) + (stats.pets or 0),
+            stats.priced or 0,
+            tostring(Values.__source or "?")),
+        UI.window and COLORS.good or COLORS.down,
+        7
+    )
 
     log("оверлей активен, жду начала трейда")
 end

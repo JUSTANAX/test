@@ -63,6 +63,16 @@ def main() -> int:
     report = json.loads(REPORT_FILE.read_text(encoding="utf-8"))
     sv = json.loads(SV_FILE.read_text(encoding="utf-8")) if SV_FILE.exists() else {}
 
+    # Возраст цены у категорий РАЗНЫЙ, и это не мелочь: снимки годли бывают
+    # вчерашние, а commons - месячной давности. Одна дата на весь файл вводила
+    # в заблуждение, поэтому везём дату по каждой категории и проставляем
+    # предмету его собственную.
+    category_dates: dict[str, str] = {}
+    for name, info in (sv.get("categories") or {}).items():
+        iso = (info or {}).get("sourceUpdatedIso") or ""
+        if iso:
+            category_dates[name] = iso[:10]
+
     items: dict[str, dict[str, dict]] = {"Weapons": {}, "Pets": {}}
     kinds: dict[str, int] = defaultdict(int)
     skipped_unmatched = 0
@@ -98,6 +108,11 @@ def main() -> int:
         # Поля для панели деталей. Кладём только непустые: у трети каталога
         # их нет, и пустые строки раздули бы файл, который едет по сети
         # при каждом запуске игры.
+        # Дата цены именно этого предмета.
+        item_date = category_dates.get(rec.get("svCategory") or "")
+        if item_date:
+            entry["date"] = item_date
+
         for src, dst in (
             ("stability", "stability"),
             ("diff", "diff"),
@@ -117,10 +132,16 @@ def main() -> int:
 
         items[bucket][rec["gameKey"]] = entry
 
+    # Самая старая дата по категориям, а не то, что записал парсер: в старых
+    # файлах там лежит дата первой попавшейся категории, и она выглядит
+    # свежее, чем есть на самом деле.
+    oldest = min(category_dates.values()) if category_dates else None
+
     payload = {
-        "schema": 1,
+        "schema": 2,
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "sourceUpdatedIso": sv.get("sourceUpdatedIso"),
+        "sourceUpdatedIso": oldest or sv.get("sourceUpdatedIso"),
+        "categoryDates": category_dates,
         "stats": {
             "weapons": len(items["Weapons"]),
             "pets": len(items["Pets"]),

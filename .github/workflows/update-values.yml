@@ -1,0 +1,78 @@
+name: Обновление цен
+
+# Цены на сайте двигаются пачками раз в 2-5 дней, поэтому ежедневного запуска
+# достаточно с запасом. Чаще смысла нет: в архиве не появится нового снимка.
+on:
+  schedule:
+    - cron: "17 4 * * *"   # каждый день в 04:17 UTC
+  workflow_dispatch:        # и вручную, когда нужно срочно
+
+# Нужно, чтобы шаг коммита мог писать в репозиторий.
+permissions:
+  contents: write
+
+concurrency:
+  group: update-values
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Забрать репозиторий
+        uses: actions/checkout@v4
+
+      - name: Поставить Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Поставить зависимости
+        run: pip install -r requirements.txt
+
+      - name: Собрать свежие цены
+        # update.py гоняет три шага и останавливается на первом сбое.
+        # Если хоть одна категория не разобралась, sv_parser вернёт 1 и
+        # НЕ перезапишет каталог: неполный набор опаснее устаревшего, потому
+        # что предметы пропавших категорий получили бы цену однофамильцев.
+        run: python update.py
+
+      - name: Проверить, что артефакт не испортился
+        # Пояс поверх подтяжек: даже если предыдущий шаг отчитался об успехе,
+        # не коммитим файл, который явно сломан или подозрительно похудел.
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+
+          p = pathlib.Path("data/mm2_values.json")
+          if not p.exists():
+              sys.exit("нет data/mm2_values.json")
+
+          d = json.loads(p.read_text(encoding="utf-8"))
+          weapons = len(d.get("items", {}).get("Weapons", {}))
+          pets = len(d.get("items", {}).get("Pets", {}))
+          priced = d.get("stats", {}).get("priced", 0)
+
+          print(f"оружия={weapons} петов={pets} с ценой={priced}")
+
+          if weapons < 900:
+              sys.exit(f"оружий всего {weapons}, ожидалось ~960 - каталог неполон")
+          if priced < 400:
+              sys.exit(f"с ценой всего {priced}, ожидалось ~470 - цены потерялись")
+          if not d.get("categoryDates"):
+              sys.exit("нет categoryDates - собран старой версией сборщика")
+          PY
+
+      - name: Закоммитить, если что-то изменилось
+        run: |
+          if git diff --quiet -- data/mm2_values.json; then
+            echo "Цены не изменились, коммит не нужен."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/mm2_values.json
+          git commit -m "Свежие цены $(date -u +%Y-%m-%d)"
+          git push
