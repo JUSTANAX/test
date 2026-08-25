@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+# Промежуточные артефакты сборки - пересобираются из update.py за пару минут
+# и весят больше, чем сам результат.
+data/sv_values.json
+data/match_report.json
