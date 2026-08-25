@@ -61,6 +61,36 @@ RETRY_COUNT = 3
 RETRY_SLEEP = 5.0
 POLITE_DELAY = 1.5
 
+# --- Свежий снимок по требованию ------------------------------------------
+#
+# Ключевая находка: краулер Internet Archive НЕ блокируется Imperva - он
+# получает настоящую страницу, а не заглушку. И его можно позвать вручную.
+#
+# Без этого мы заложники расписания краулера: /mm2/commons стоял на снимке от
+# 24 июля, и треть цен в нём успела устареть (Mummified 15 -> 35). После
+# запроса на сохранение та же страница приехала с датой сайта 23 августа.
+#
+# Один запрос отрабатывает ~30 секунд, поэтому 13 категорий занимают минут
+# семь. Для ежедневного прогона это приемлемо, а свежесть становится
+# управляемой вместо случайной.
+SAVE_URL = "https://web.archive.org/save/https://supremevalues.com/mm2/{cat}"
+SAVE_TIMEOUT = 200
+
+# Первый прогон показал, почему нельзя обновлять всё сразу: 13 запросов подряд
+# дали 11 отказов HTTP 503, а следом архив зарезал и чтение - обход потерял 9
+# категорий из 13. Поэтому за прогон трогаем несколько самых застоявшихся, с
+# длинными паузами. При ежедневном запуске весь каталог обновляется за неделю,
+# и архив не считает нас злоупотребляющими.
+SAVE_BATCH = 4          # сколько категорий обновляем за один прогон
+SAVE_DELAY = 45.0       # пауза между запросами на сохранение
+SAVE_SETTLE = 30.0      # сколько ждать, пока CDX увидит новые снимки
+
+# Ограничение частоты - это не отказ, а просьба подождать. Пауза здесь на
+# порядок длиннее обычной: короткие повторы 5 и 10 секунд её не пересиживали.
+RATE_LIMIT_CODES = {429, 503}
+RATE_LIMIT_SLEEP = 60.0
+RATE_LIMIT_RETRIES = 4
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -103,17 +133,41 @@ def make_session() -> requests.Session:
 
 def fetch_raw(session: requests.Session, url: str) -> bytes:
     """GET с повторами. Возвращает сырые байты без попытки декодирования."""
-    last_err: Exception | None = None
-    for attempt in range(1, RETRY_COUNT + 1):
+    # Две разные неудачи требуют разного поведения:
+    #   ограничение частоты - подождать долго, страница никуда не делась;
+    #   всё остальное       - короткий повтор, дальше сдаёмся.
+    last_err = "неизвестно"
+    short_tries = 0
+    long_tries = 0
+
+    while True:
         try:
             r = session.get(url, timeout=REQUEST_TIMEOUT, stream=False)
-            if r.status_code != 200:
-                raise ParseFailure(f"HTTP {r.status_code}")
+        except Exception as exc:  # noqa: BLE001 - сеть, ретраим что угодно
+            last_err = f"{type(exc).__name__}: {exc}"
+            short_tries += 1
+            if short_tries >= RETRY_COUNT:
+                break
+            time.sleep(RETRY_SLEEP * short_tries)
+            continue
+
+        if r.status_code == 200:
             return r.content
-        except Exception as exc:  # noqa: BLE001 - хотим ретраить всё сетевое
-            last_err = exc
-            if attempt < RETRY_COUNT:
-                time.sleep(RETRY_SLEEP * attempt)
+
+        if r.status_code in RATE_LIMIT_CODES:
+            last_err = f"HTTP {r.status_code} (архив ограничивает частоту)"
+            long_tries += 1
+            if long_tries > RATE_LIMIT_RETRIES:
+                break
+            wait = RATE_LIMIT_SLEEP * long_tries
+            print(f"\n      пауза {wait:.0f} сек по просьбе архива ... ", end="", flush=True)
+            time.sleep(wait)
+            continue
+
+        # Настоящая ошибка вроде 404: повторять бессмысленно.
+        last_err = f"HTTP {r.status_code}"
+        break
+
     raise ParseFailure(f"не удалось скачать {url}: {last_err}")
 
 
@@ -425,6 +479,75 @@ def normalize_item(name: str, src: dict[str, Any], category: str) -> dict[str, A
 # Обработка категории
 # --------------------------------------------------------------------------
 
+def request_save(session: requests.Session, category: str) -> tuple[bool, str]:
+    """
+    Просит архив зайти на страницу прямо сейчас.
+
+    Возвращает (получилось, пояснение). Неудача не критична: обход дальше
+    возьмёт самый свежий из уже существующих снимков, просто он будет старее.
+    """
+    url = SAVE_URL.format(cat=category)
+    try:
+        r = session.get(url, timeout=SAVE_TIMEOUT, allow_redirects=True)
+    except requests.RequestException as exc:
+        return False, f"сеть: {type(exc).__name__}"
+
+    if r.status_code == 429:
+        return False, "архив ограничил частоту (429)"
+    if r.status_code != 200:
+        return False, f"HTTP {r.status_code}"
+
+    # Метка нового снимка приезжает в адресе после переадресации.
+    m = re.search(r"/web/(\d{14})/", r.url)
+    if m:
+        ts = m.group(1)
+        return True, f"снимок {ts[:4]}-{ts[4:6]}-{ts[6:8]}"
+    return True, "сохранено, метку не разобрал"
+
+
+def pick_stalest(limit: int) -> list[str]:
+    """
+    Категории с самыми старыми ценами - их и обновляем в этот прогон.
+
+    Возраст берём из прошлого sv_values.json. Если его нет (первый запуск),
+    порядок неважен: свежих данных всё равно ни у кого нет.
+    """
+    ages: dict[str, str] = {}
+    try:
+        prev = json.loads(OUT_FILE.read_text(encoding="utf-8"))
+        for name, info in (prev.get("categories") or {}).items():
+            ages[name] = (info or {}).get("sourceUpdatedIso") or ""
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    # Категория без даты считается самой старой: про неё мы ничего не знаем.
+    return sorted(CATEGORIES, key=lambda c: ages.get(c) or "")[:limit]
+
+
+def refresh_snapshots(session: requests.Session, targets: list[str]) -> dict[str, str]:
+    """Просит архив забрать свежие страницы по указанным категориям."""
+    report: dict[str, str] = {}
+    print("=" * 62)
+    print(f"Прошу архив обновить {len(targets)} категории из {len(CATEGORIES)}:")
+    print("  " + ", ".join(targets))
+    print("Остальные подождут следующего прогона - архив не любит частых просьб.")
+    print("=" * 62)
+
+    for i, cat in enumerate(targets, 1):
+        print(f"[{i}/{len(targets)}] {cat} ... ", end="", flush=True)
+        ok, note = request_save(session, cat)
+        report[cat] = note
+        print(("OK   " if ok else "мимо ") + note)
+        if i < len(targets):
+            time.sleep(SAVE_DELAY)
+
+    print()
+    print(f"Жду {SAVE_SETTLE:.0f} сек, пока индекс архива увидит новые снимки...")
+    time.sleep(SAVE_SETTLE)
+    print()
+    return report
+
+
 def process_category(session: requests.Session, category: str) -> CategoryResult:
     res = CategoryResult(category=category)
     try:
@@ -495,6 +618,20 @@ def process_category(session: requests.Session, category: str) -> CategoryResult
 def main() -> int:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     session = make_session()
+
+    # По умолчанию сначала просим архив обновиться. Флаг --no-save нужен для
+    # быстрых повторных прогонов, когда свежесть не важна: обход без него
+    # занимает на семь минут меньше.
+    save_report: dict[str, str] = {}
+    if "--no-save" not in sys.argv:
+        batch = SAVE_BATCH
+        for arg in sys.argv[1:]:
+            if arg.startswith("--save="):
+                batch = max(0, int(arg.split("=", 1)[1]))
+        if batch > 0:
+            save_report = refresh_snapshots(session, pick_stalest(batch))
+    else:
+        print("--no-save: беру то, что уже лежит в архиве\n")
 
     results: list[CategoryResult] = []
     for i, cat in enumerate(CATEGORIES, 1):
