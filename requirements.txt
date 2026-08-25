@@ -1,1 +1,6 @@
 requests>=2.31
+
+# Нужен для sv_direct.py - основного источника цен. Он запускает настоящий
+# Chromium, и сайт отдаёт ему полную страницу вместо заглушки Imperva.
+# Сам браузер ставится отдельно: playwright install chromium
+playwright>=1.40

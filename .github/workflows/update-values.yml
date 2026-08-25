@@ -34,6 +34,50 @@ jobs:
       - name: Поставить зависимости
         run: pip install -r requirements.txt
 
+      - name: Поставить браузер для Playwright
+        # --with-deps тянет системные библиотеки, без которых Chromium на
+        # чистом ubuntu не стартует.
+        run: playwright install --with-deps chromium
+
+      - name: Проверка - пускает ли сайт из облака
+        # Отдельный шаг ради ясного ответа в логе. Imperva к датацентровым
+        # адресам строже, чем к домашним, поэтому то, что работает локально,
+        # в облаке может и не пройти. Шаг НЕ валит сборку: если не пустит,
+        # update.py откатится на зеркала, и цены всё равно обновятся.
+        continue-on-error: true
+        run: |
+          python - <<'PY'
+          from playwright.sync_api import sync_playwright
+
+          URL = "https://supremevalues.com/mm2/godlies"
+          PROBE = """() => ({
+            len: document.documentElement.outerHTML.length,
+            incapsula: /_Incapsula_Resource|Incapsula/i.test(document.documentElement.outerHTML),
+            count: (typeof window._svPopup === 'object' && window._svPopup)
+              ? Object.keys(window._svPopup).length : 0,
+          })"""
+
+          with sync_playwright() as p:
+              b = p.chromium.launch(headless=True)
+              pg = b.new_context(viewport={"width": 1440, "height": 900},
+                                 locale="en-US").new_page()
+              pg.goto(URL, wait_until="domcontentloaded", timeout=60000)
+              pg.wait_for_timeout(4000)
+              r = pg.evaluate(PROBE)
+              b.close()
+
+          print(f"размер страницы : {r['len']}")
+          print(f"защита Imperva  : {r['incapsula']}")
+          print(f"предметов       : {r['count']}")
+          print()
+          if r["count"] > 0:
+              print("ОБЛАКО ПРОХОДИТ: сайт отдал полную страницу с датацентрового адреса.")
+          else:
+              print("ОБЛАКО НЕ ПРОХОДИТ: пришла заглушка.")
+              print("Цены возьмутся с зеркал - это на шаг менее свежо, но рабочий путь.")
+              raise SystemExit(1)
+          PY
+
       - name: Собрать свежие цены
         # update.py берёт цены с зеркал Supreme Values, а при их недоступности
         # откатывается на Wayback. Оба пути при неполном каталоге возвращают 1
