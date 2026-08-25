@@ -27,11 +27,14 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      # Версии закреплены мажорными тегами: патчи внутри мажора подтягиваются
+      # сами, а смена мажора остаётся осознанным решением. На v4 и v5 GitHub
+      # ругался, что они держатся на Node 20, который выводят из обращения.
       - name: Забрать репозиторий
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Поставить Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
