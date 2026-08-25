@@ -54,11 +54,20 @@ def main() -> int:
 
         bucket = "Pets" if rec.get("gameType") == "Pet" else "Weapons"
         kind = rec.get("valueKind") or "none"
+        value = rec.get("value")
+
+        # Совпадение из чужой категории - не доказательство цены. Показать
+        # такое число как достоверное хуже, чем не показать ничего: игрок
+        # примет решение о сделке по выдуманной цифре.
+        if rec.get("lowConfidence"):
+            kind = "uncertain"
+            value = None
+
         kinds[kind] += 1
 
         entry = {
             "name": rec.get("svName") or rec.get("gameName") or "",
-            "value": rec.get("value"),
+            "value": value,
             "kind": kind,
             "demand": rec.get("demand") or "",
             "rarity": rec.get("siteRarity") or "",

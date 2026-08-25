@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 import re
 import sys
 import time
@@ -146,21 +147,28 @@ def pick_snapshot(session: requests.Session, category: str) -> str:
     }
     # CDX регулярно отдаёт 503/504 под нагрузкой - это временно, а не отказ.
     rows = None
-    last_status = None
+    last_problem = None
     for attempt in range(1, RETRY_COUNT + 1):
-        r = session.get(CDX_URL, params=params, timeout=REQUEST_TIMEOUT)
-        last_status = r.status_code
-        if r.status_code == 200:
-            try:
-                rows = r.json()
-                break
-            except json.JSONDecodeError as exc:
-                raise ParseFailure(f"CDX отдал не-JSON: {exc}") from exc
+        # Сам запрос тоже под try: обрыв связи или таймаут - такое же временное
+        # явление, как 503. Без этого первый же ConnectionError вылетал наружу
+        # мимо оставшихся попыток и терял категорию целиком.
+        try:
+            r = session.get(CDX_URL, params=params, timeout=REQUEST_TIMEOUT)
+        except requests.RequestException as exc:
+            last_problem = f"сеть: {type(exc).__name__}"
+        else:
+            last_problem = f"HTTP {r.status_code}"
+            if r.status_code == 200:
+                try:
+                    rows = r.json()
+                    break
+                except json.JSONDecodeError as exc:
+                    raise ParseFailure(f"CDX отдал не-JSON: {exc}") from exc
         if attempt < RETRY_COUNT:
             time.sleep(RETRY_SLEEP * attempt * 2)
 
     if rows is None:
-        raise ParseFailure(f"CDX вернул HTTP {last_status} после {RETRY_COUNT} попыток")
+        raise ParseFailure(f"CDX недоступен после {RETRY_COUNT} попыток ({last_problem})")
 
     if not rows or len(rows) < 2:
         raise ParseFailure("CDX не нашёл ни одного снимка")
@@ -516,7 +524,14 @@ def main() -> int:
 
     payload = {
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "sourceUpdatedIso": next((r.source_updated_iso for r in ok if r.source_updated_iso), None),
+        # Самая СТАРАЯ дата, а не первая попавшаяся: раньше сюда попадала дата
+        # категории sets просто потому, что она идёт первой в списке, и файл
+        # выглядел свежим, хотя большая часть каталога ехала со снимка месячной
+        # давности.
+        "sourceUpdatedIso": min(
+            (r.source_updated_iso for r in ok if r.source_updated_iso),
+            default=None,
+        ),
         "categories": {
             r.category: {
                 "count": len(r.items),
@@ -531,15 +546,32 @@ def main() -> int:
         "items": catalog,
     }
 
-    OUT_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
     print("\n" + "=" * 62)
     print(f"Категорий разобрано : {len(ok)}/{len(CATEGORIES)}")
     print(f"Предметов всего     : {len(catalog)}")
     if collisions:
         print(f"Коллизий ключа      : {collisions}")
+
+    # Неполный каталог НЕЛЬЗЯ класть поверх хорошего. Пропавшая категория не
+    # оставляет дырку - она отправляет предметы в фолбэк по имени, и они
+    # получают цену от однофамильца из другой категории. Прошлый файл с
+    # чуть устаревшими, но правильными числами полезнее свежего с чужими.
     if failed:
         print(f"Сбойные категории   : {', '.join(r.category for r in failed)}")
+        print()
+        print("НЕ ЗАПИСАНО: каталог неполон.")
+        print(f"Прежний {OUT_FILE.name} оставлен нетронутым.")
+        print("Неполный каталог опаснее устаревшего: предметы пропавших")
+        print("категорий получили бы цену однофамильцев из чужих категорий.")
+        print("=" * 62)
+        return 1
+
+    # Запись через временный файл: прерывание на середине не оставит
+    # наполовину записанный JSON, который следующий шаг примет за годный.
+    tmp = OUT_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, OUT_FILE)
+
     print(f"Записано            : {OUT_FILE}")
     print("=" * 62)
 

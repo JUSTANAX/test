@@ -510,6 +510,8 @@ local function summarise(offer)
                 reason = data.text or "цена бартером"
             elseif data.kind == "coming-soon" then
                 name, reason = data.name or tostring(itemId), "ещё не оценён"
+            elseif data.kind == "uncertain" then
+                name, reason = data.name or tostring(itemId), "цена не подтверждена"
             else
                 name, reason = data.name or tostring(itemId), "без ценности"
             end
@@ -714,7 +716,9 @@ local function buildTradePanel()
     local verdict = Instance.new("TextLabel")
     verdict.Name = "Verdict"
     verdict.BackgroundTransparency = 1
-    verdict.Size = UDim2.new(1, 0, 0, 34)
+    -- 52, а не 34: приписка про неполноту сравнения занимает третью строку и
+    -- при прежней высоте обрывалась на полуслове.
+    verdict.Size = UDim2.new(1, 0, 0, 52)
     verdict.LayoutOrder = 3
     verdict.Font = Enum.Font.Gotham
     verdict.TextSize = 14
@@ -727,7 +731,8 @@ local function buildTradePanel()
     UI.rows.verdict = verdict
 
     -- Карточка с неучтённым. Растягивается на остаток высоты панели.
-    local exCard = buildCard(panel, 4, 1, -190)
+    -- -208 = -190 минус 18px, на которые подрос блок вердикта.
+    local exCard = buildCard(panel, 4, 1, -208)
 
     local exHeader = Instance.new("Frame")
     exHeader.Name = "ExcludedHeader"
@@ -929,8 +934,10 @@ local function updatePanel(mineTotal, theirTotal, mineExcluded, theirExcluded, o
             .. " предм. без цены — сравнение неполное."
     end
 
-    UI.rows.mine.Text = approx .. formatValue(mineTotal)
-    UI.rows.theirs.Text = approx .. formatValue(theirTotal)
+    -- Знак приблизительности - на ту сторону, где действительно есть
+    -- неучтённое. Общий флаг ставил «≈» и на точно посчитанную сторону.
+    UI.rows.mine.Text = (#mineExcluded > 0 and "≈" or "") .. formatValue(mineTotal)
+    UI.rows.theirs.Text = (#theirExcluded > 0 and "≈" or "") .. formatValue(theirTotal)
     UI.rows.theirs.Parent.Caption.Text = opponent or "Оппонент"
     UI.rows.diff.Text = diffText
     UI.rows.diff.TextColor3 = diffColor

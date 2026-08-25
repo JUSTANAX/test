@@ -75,10 +75,20 @@ def sv_display_name(game_key: str, item_name: str) -> tuple[str, bool]:
     "Seer"), а на сайте это отдельный предмет "Chroma Seer" с другой ценой.
     Матчить по ItemName нельзя - обычный Seer стоит копейки, хрома дорого.
 
-    Суффикс проверяется строго: Chromatic_G_2023 - самостоятельный предмет,
-    а не хрома-версия, и подстрочный поиск "chroma" его бы сломал.
+    Игра использует ОБА написания ключа, и это легко упустить:
+        SeerChroma        - суффикс, таких большинство
+        ChromaDarkbringer - префикс, таких мало, но они дорогие
+
+    Пока учитывался только суффикс, ChromaDarkbringer сопоставлялся с обычным
+    Darkbringer за 33 вместо Chroma Darkbringer за 65 - занижение вдвое, и
+    молча: в сводке он просто не попадал в число хром.
+
+    Chromatic_G_2023 отсекается отдельно: это самостоятельный предмет, а не
+    хрома-версия, и наивная проверка префикса его бы сломала.
     """
     if game_key.endswith("Chroma"):
+        return f"Chroma {item_name}", True
+    if game_key.startswith("Chroma") and not re.match(r"^Chromatic($|_)", game_key):
         return f"Chroma {item_name}", True
     return item_name, False
 
@@ -225,6 +235,14 @@ def main() -> int:
                         rec["candidates"] = [
                             {"category": x["category"], "value": x["value"]} for x in candidates
                         ]
+                    # Совпадение из ЧУЖОЙ категории - не доказательство.
+                    # Silver Vampire's Axe в игре Unique, на сайте у него цены
+                    # нет, и фолбэк подставлял ему 1450 от древнего Vampire's
+                    # Axe. Один кандидат вместо нескольких не делает такую
+                    # подстановку достовернее, поэтому ambiguous тут не спасал.
+                    if expected_cat and hit["category"] != expected_cat:
+                        rec["lowConfidence"] = True
+                        rec["wrongCategory"] = hit["category"]
                     break
 
         if hit is None and c in by_alias:
@@ -242,16 +260,18 @@ def main() -> int:
 
     # --- Петы -------------------------------------------------------------
     for key, g in game.get("pets", {}).items():
-        name = g.get("name", "")
+        # Хрома-петы (BatChroma, FoxChroma и ещё пятеро) устроены так же, как
+        # хрома-оружие, и раньше флаг им не проставлялся вовсе.
+        name, is_chroma = sv_display_name(key, g.get("name", ""))
         c = canon(name)
         rec = {
             "gameKey": key,
-            "gameName": name,
+            "gameName": g.get("name", ""),
             "expectedName": name,
             "gameType": "Pet",
             "gameRarity": g.get("rarity", ""),
-            "expectedCategory": "pets",
-            "isChroma": False,
+            "expectedCategory": "chromas" if is_chroma else "pets",
+            "isChroma": is_chroma,
             "method": None,
             "svName": None,
             "svCategory": None,
@@ -259,14 +279,22 @@ def main() -> int:
             "valueKind": None,
             "ambiguous": False,
         }
-        hit = by_cat_name.get(("pets", c))
+
+        # Пет ищется только среди петов (или хром, если это хрома-пет).
+        # Прежний фолбэк по всем категориям уводил пета в оружие: пет Santa
+        # получал данные ножа Santa вместе с бартерным текстом «x3 T1 Commons».
+        target_cat = "chromas" if is_chroma else "pets"
+        hit = by_cat_name.get((target_cat, c))
         if hit:
             rec["method"] = "имя+категория"
-        elif c in by_name:
-            candidates = by_name[c]
-            hit = candidates[0]
-            rec["method"] = "только имя"
-            rec["ambiguous"] = len(candidates) > 1
+        else:
+            for v in name_candidates(name, "", g.get("year", ""), g.get("event", "")):
+                probe = by_cat_name.get((target_cat, canon(v)))
+                if probe:
+                    hit = probe
+                    rec["method"] = "имя+год"
+                    rec["matchedVariant"] = v
+                    break
         if hit:
             rec.update(sv_payload(hit))
         else:
