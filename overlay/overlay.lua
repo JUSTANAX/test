@@ -34,9 +34,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 
 local COLORS = {
-    bg      = Color3.fromHex("000000"),
-    text    = Color3.fromHex("FFFFFF"),
-    unknown = Color3.fromHex("A1A1A1"),
+    -- Оранжевый для цен. Обводка чёрная: текст лежит прямо на иконке без
+    -- подложки, а иконки бывают и яркими, и почти белыми.
+    value   = Color3.fromHex("FF9D2E"),
+    stroke  = Color3.fromHex("000000"),
+    unknown = Color3.fromHex("BFBFBF"),
 }
 
 -- Объявляем заранее: заполняются в resolveTradeGui, но нужны функциям выше.
@@ -233,25 +235,17 @@ end
 local TAG_NAME = "OxyValueTag"
 
 local function buildTag(parent)
+    -- Без подложки: только текст поверх иконки. Читаемость держит чёрная
+    -- обводка самого шрифта, а не тёмный прямоугольник под ним.
     local frame = Instance.new("Frame")
     frame.Name = TAG_NAME
     frame.AnchorPoint = Vector2.new(0, 1)
-    frame.Size = UDim2.new(1, -4, 0, 24)
-    frame.BackgroundColor3 = COLORS.bg
-    frame.BackgroundTransparency = 0.2
+    frame.Size = UDim2.new(1, -6, 0, 22)
+    frame.BackgroundTransparency = 1
     frame.BorderSizePixel = 0
     frame.ZIndex = 50
     frame.Visible = false
     frame.Parent = parent
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 4)
-    corner.Parent = frame
-
-    local pad = Instance.new("UIPadding")
-    pad.PaddingLeft = UDim.new(0, 5)
-    pad.PaddingRight = UDim.new(0, 5)
-    pad.Parent = frame
 
     -- TextScaled выключен намеренно: иначе на длинном числе шрифт схлопнется
     -- в нечитаемый, а нам важнее обрезать хвост.
@@ -260,8 +254,10 @@ local function buildTag(parent)
     value.BackgroundTransparency = 1
     value.Size = UDim2.new(1, 0, 1, 0)
     value.Font = Enum.Font.GothamBold
-    value.TextSize = 17
-    value.TextColor3 = COLORS.text
+    value.TextSize = 18
+    value.TextColor3 = COLORS.value
+    value.TextStrokeColor3 = COLORS.stroke
+    value.TextStrokeTransparency = 0
     value.TextXAlignment = Enum.TextXAlignment.Left
     value.TextYAlignment = Enum.TextYAlignment.Center
     value.TextTruncate = Enum.TextTruncate.AtEnd
@@ -325,7 +321,7 @@ local function paintTag(slot, data)
         tag.Value.TextColor3 = COLORS.unknown
     else
         tag.Value.Text = formatValue(data.value)
-        tag.Value.TextColor3 = COLORS.text
+        tag.Value.TextColor3 = COLORS.value
     end
 
     placeTag(slot, tag)
@@ -373,48 +369,58 @@ local function buildOfferTotal(offer)
 
     local label = Instance.new("TextLabel")
     label.Name = TOTAL_NAME
-    label.AnchorPoint = Vector2.new(1, 0.5)
+    -- Прижат ВЛЕВО и встаёт сразу за надписью оффера. Прежний вариант у
+    -- правого края обрезался границей окна трейда.
+    label.AnchorPoint = Vector2.new(0, 0.5)
     label.Size = UDim2.new(0, TOTAL_WIDTH, 0, 26)
     label.BackgroundTransparency = 1
     label.Font = Enum.Font.GothamBold
     label.TextSize = 22
-    label.TextColor3 = COLORS.text
-    label.TextXAlignment = Enum.TextXAlignment.Right
+    label.TextColor3 = COLORS.value
+    label.TextXAlignment = Enum.TextXAlignment.Left
     label.TextYAlignment = Enum.TextYAlignment.Center
     label.TextTruncate = Enum.TextTruncate.AtEnd
-    label.TextStrokeColor3 = COLORS.bg
-    label.TextStrokeTransparency = 0.35
+    label.TextStrokeColor3 = COLORS.stroke
+    label.TextStrokeTransparency = 0
     label.ZIndex = 30
     label.Text = ""
     label.Parent = offer
     return label
 end
 
---- Ставит итог справа, на одной высоте с заголовком оффера.
+--- Ставит итог сразу за надписью YOUR OFFER / THEIR OFFER.
 ---
---- У THEIR OFFER справа уже стоит имя игрока, поэтому сдвигаемся левее него.
---- Координаты не зашиваем: считаем от реальных размеров, чтобы вёрстка не
---- поехала на другом разрешении.
+--- Опираемся на TextBounds - фактическую ширину отрисованного текста, а не
+--- на рамку метки: рамка заголовка растянута на весь оффер, и отступ от неё
+--- увёл бы итог в другой конец. Координаты не зашиваем, чтобы вёрстка не
+--- поехала на другом разрешении и при другой длине надписи.
 local function placeOfferTotal(offer, label)
     if not offer or not label then
         return
     end
     local title = offer:FindFirstChild("Title")
-    local yOffset = 14
-    if title and title.AbsoluteSize.Y > 0 then
-        yOffset = (title.AbsolutePosition.Y - offer.AbsolutePosition.Y)
-            + title.AbsoluteSize.Y / 2
+    if not title or title.AbsoluteSize.Y <= 0 then
+        label.Position = UDim2.new(0, 8, 0, 14)
+        return
     end
 
-    local rightGap = 6
-    local username = offer:FindFirstChild("Username")
-    if username and username.Visible and username.AbsoluteSize.X > 0 then
-        -- Имя оппонента прижато вправо: встаём слева от него.
-        local usernameLeft = username.AbsolutePosition.X - offer.AbsolutePosition.X
-        rightGap = math.max(6, offer.AbsoluteSize.X - usernameLeft + 10)
+    local yOffset = (title.AbsolutePosition.Y - offer.AbsolutePosition.Y)
+        + title.AbsoluteSize.Y / 2
+
+    -- Правый край самого текста заголовка, с учётом его выравнивания.
+    local textWidth = title.TextBounds.X
+    local textRight
+    if title.TextXAlignment == Enum.TextXAlignment.Right then
+        textRight = title.AbsolutePosition.X + title.AbsoluteSize.X
+    elseif title.TextXAlignment == Enum.TextXAlignment.Center then
+        textRight = title.AbsolutePosition.X
+            + (title.AbsoluteSize.X + textWidth) / 2
+    else
+        textRight = title.AbsolutePosition.X + textWidth
     end
 
-    label.Position = UDim2.new(1, -rightGap, 0, yOffset)
+    local xOffset = (textRight - offer.AbsolutePosition.X) + 10
+    label.Position = UDim2.new(0, xOffset, 0, yOffset)
 end
 
 --============================================================================
