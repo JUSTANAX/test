@@ -23,6 +23,7 @@ import sys
 import time
 from collections import defaultdict
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
@@ -33,6 +34,25 @@ OUT_FILE = DATA / "mm2_values.json"
 # Локальный запасной путь доставки: Lua сможет прочитать файл через readfile,
 # если сеть или GitHub-зеркало недоступны.
 WORKSPACE = Path.home() / "AppData" / "Local" / "Madium" / "Workspace"
+
+
+def clean(raw: Any) -> str:
+    """
+    Приводит поле сайта к строке, годной для показа. Пустая строка = не везём.
+
+    Сайт помечает отсутствие данных по-разному: пустой строкой, "N/A" и
+    "[N/A]" в квадратных скобках. Показать игроку "[N/A]" хуже, чем не
+    показать поле вовсе. Алиасы иногда приходят списком, иногда строкой.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, (list, tuple)):
+        parts = [clean(x) for x in raw]
+        return ", ".join(p for p in parts if p)
+    text = str(raw).strip()
+    if text.upper().strip("[]") in ("", "N/A", "NA", "NONE", "NULL"):
+        return ""
+    return text
 
 
 def main() -> int:
@@ -74,6 +94,21 @@ def main() -> int:
             "trend": rec.get("pctChange") or "",
             "gameRarity": rec.get("gameRarity") or "",
         }
+
+        # Поля для панели деталей. Кладём только непустые: у трети каталога
+        # их нет, и пустые строки раздули бы файл, который едет по сети
+        # при каждом запуске игры.
+        for src, dst in (
+            ("stability", "stability"),
+            ("diff", "diff"),
+            ("origin", "origin"),
+            ("flippability", "flip"),
+            ("riseChance", "rise"),
+            ("aliases", "aliases"),
+        ):
+            cleaned = clean(rec.get(src))
+            if cleaned:
+                entry[dst] = cleaned
 
         # Бартерный текст нужен только там, где он есть, и только он длинный -
         # в ярлык не влезет, уедет в панель итогов.

@@ -56,27 +56,120 @@ local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 -- Границу держит обводка: 4.90 к карточке и 6.23 к панели. Поэтому нельзя
 -- поднимать strokeTransparency - панель мгновенно развалится в пятно.
 local COLORS = {
-    bg       = Color3.fromHex("000000"),  -- панель, тот самый супер-чёрный
-    surface  = Color3.fromHex("16233A"),  -- карточка
-    stroke   = Color3.fromHex("6E9FD6"),  -- кант, держит границу карточки
-    text     = Color3.fromHex("FFFFFF"),  -- 15.72 на карточке, 21.0 на панели
-    muted    = Color3.fromHex("A9C8EA"),  -- 9.09 на карточке (запас вдвое)
-    unknown  = Color3.fromHex("A9C8EA"),
-    accent   = Color3.fromHex("66B8F5"),  -- 7.29 на карточке
-    primary  = Color3.fromHex("48CCF2"),  -- голубой, точка в шапке
+    -- Фон чисто чёрный. Отделять от него карточку заливкой бесполезно, поэтому
+    -- карточка - не цвет, а лёгкая белая подсветка поверх (см. CARD_*): тот же
+    -- приём, которым пользуется сам WindUI.
+    bg       = Color3.fromHex("000000"),
+    surface  = Color3.fromHex("FFFFFF"),  -- подсветка карточки, не заливка
+    stroke   = Color3.fromHex("FFFFFF"),  -- кант белый и тихий, как у WindUI
+    text     = Color3.fromHex("FFFFFF"),  -- 21.0 на чёрном
+    muted    = Color3.fromHex("A1A1A1"),  -- Placeholder из темы WindUI
+    unknown  = Color3.fromHex("A1A1A1"),
     listName = Color3.fromHex("FFFFFF"),
-    up       = Color3.fromHex("96F4FF"),  -- рост, 12.49 на карточке
-    down     = Color3.fromHex("6690FF"),  -- падение, 5.24
+
+    -- Голубой и синий остаются, но только как акценты: тренд, выгода,
+    -- полоски сторон, точка в шапке. Ими не красится ни один фон.
+    accent   = Color3.fromHex("66B8F5"),
+    primary  = Color3.fromHex("48CCF2"),
+    up       = Color3.fromHex("96F4FF"),
+    down     = Color3.fromHex("6690FF"),
     good     = Color3.fromHex("96F4FF"),
     bad      = Color3.fromHex("6690FF"),
-    even     = Color3.fromHex("A9C8EA"),
+    even     = Color3.fromHex("A1A1A1"),
 }
 
--- 0 = непрозрачно. Значение подобрано так, чтобы кант давал 4.90 к карточке.
-local STROKE_TRANSPARENCY = 0.10
+-- Подсветка карточки: белый при 0.94 даёт на чёрном примерно #0F0F0F.
+-- Ровно так WindUI отделяет свои элементы, не уходя от чёрного фона.
+local CARD_TRANSPARENCY = 0.94
+-- Обводки больше нет: границу держат спрайт со скруглением и тень под ним,
+-- как в самом WindUI. Яркий кант был вынужденной мерой при плоской заливке.
 
 local RADIUS_WINDOW = 16
 local RADIUS_ELEMENT = 8
+
+--============================================================================
+-- Поверхности в стиле WindUI
+--
+-- WindUI не красит фон заливкой - он рисует девятислайсовый спрайт и тонирует
+-- его через ImageColor3. Отсюда мягкие края и «материальность» окна, которой
+-- плоский BackgroundColor3 не даёт. Берём те же спрайты, чтобы наша панель и
+-- его окно настроек не выглядели как два разных приложения.
+--
+-- SliceCenter у исходника 460, поэтому скругление задаётся не UICorner, а
+-- SliceScale = нужный радиус / 460.
+--============================================================================
+
+local SPRITE_SURFACE = "rbxassetid://89641024074289"
+local SPRITE_SHADOW = "rbxassetid://8992230677"
+local SPRITE_SLICE = 460
+local SHADOW_SLICE = 99
+
+--- Фон-спрайт на всю площадь родителя.
+local function paintSurface(parent, color, transparency, radius)
+    local img = Instance.new("ImageLabel")
+    img.Name = "Surface"
+    img.BackgroundTransparency = 1
+    img.Size = UDim2.new(1, 0, 1, 0)
+    img.Image = SPRITE_SURFACE
+    img.ImageColor3 = color
+    img.ImageTransparency = transparency or 0
+    img.ScaleType = Enum.ScaleType.Slice
+    img.SliceCenter = Rect.new(SPRITE_SLICE, SPRITE_SLICE, SPRITE_SLICE, SPRITE_SLICE)
+    img.SliceScale = (radius or RADIUS_WINDOW) / SPRITE_SLICE
+    img.Parent = parent
+    return img
+end
+
+--- Мягкая тень под окном. Именно она сажает панель на экран, вместо того
+--- чтобы она выглядела наклеенной.
+local function paintShadow(parent)
+    local img = Instance.new("ImageLabel")
+    img.Name = "Shadow"
+    img.BackgroundTransparency = 1
+    img.Size = UDim2.new(1, 100, 1, 100)
+    img.Position = UDim2.new(0, -50, 0, -50)
+    img.Image = SPRITE_SHADOW
+    img.ImageColor3 = Color3.new(0, 0, 0)
+    img.ImageTransparency = 0.6
+    img.ScaleType = Enum.ScaleType.Slice
+    img.SliceCenter = Rect.new(SHADOW_SLICE, SHADOW_SLICE, SHADOW_SLICE, SHADOW_SLICE)
+    img.Parent = parent
+    return img
+end
+
+--- Каркас окна: прозрачный фрейм, тень, поверхность и отдельный слой контента.
+--- Контент вынесен в свой фрейм намеренно - иначе спрайты попали бы в
+--- UIListLayout и встали бы в поток как обычные элементы.
+local function buildSurfaceWindow(parent, name, width, color, transparency)
+    local root = Instance.new("Frame")
+    root.Name = name
+    root.BackgroundTransparency = 1
+    root.Size = UDim2.new(0, width, 1, 0)
+    root.Parent = parent
+
+    paintShadow(root)
+    paintSurface(root, color, transparency, RADIUS_WINDOW)
+
+    local content = Instance.new("Frame")
+    content.Name = "Content"
+    content.BackgroundTransparency = 1
+    content.Size = UDim2.new(1, 0, 1, 0)
+    content.Parent = root
+
+    local pad = Instance.new("UIPadding")
+    pad.PaddingTop = UDim.new(0, 12)
+    pad.PaddingBottom = UDim.new(0, 12)
+    pad.PaddingLeft = UDim.new(0, 12)
+    pad.PaddingRight = UDim.new(0, 12)
+    pad.Parent = content
+
+    local list = Instance.new("UIListLayout")
+    list.SortOrder = Enum.SortOrder.LayoutOrder
+    list.Padding = UDim.new(0, 8)
+    list.Parent = content
+
+    return root, content
+end
 
 -- Цветная метка стороны читается быстрее, чем префикс «ты:» в тексте.
 -- Пара разведена и по тону, и по яркости: 3.12 друг к другу, обе проходят
@@ -91,12 +184,17 @@ local SIDE_COLOR = {
 -- увидели бы глобальную nil вместо локальной переменной.
 local TradeFrame, YourContainer, TheirContainer
 
+-- showDetails определена ниже, но нужна уже в paintTag: ярлык вешает на себя
+-- обработчик нажатия. Без этой строки внутри paintTag она была бы глобальной
+-- nil - ровно та ошибка, на которой этот файл уже спотыкался дважды.
+local showDetails
+
 local function log(...)
-    print("[MM2Value]", ...)
+    print("[OxyLab]", ...)
 end
 
 local function warnf(...)
-    warn("[MM2Value]", ...)
+    warn("[OxyLab]", ...)
 end
 
 --============================================================================
@@ -126,7 +224,8 @@ local function teardown(previous)
         local gui = pg:FindFirstChild("TradeGUI")
         if gui then
             for _, d in ipairs(gui:GetDescendants()) do
-                if d.Name == "MM2ValueTag" or d.Name == "MM2ValuePanel" then
+                if d.Name == "MM2ValueTag" or d.Name == "MM2ValuePanel"
+                    or d.Name == "MM2ValueDetails" then
                     pcall(function() d:Destroy() end)
                 end
             end
@@ -291,6 +390,24 @@ local function formatValue(v)
     return "0"
 end
 
+--- Короткая причина отсутствия цены - для ярлыка на иконке.
+---
+--- Раньше здесь показывалась игровая редкость («Unique»), но это сбивало:
+--- у предметов С ценой на том же месте стоят D/R с сайта, и одна строка
+--- означала разное в зависимости от предмета.
+local function shortReason(data)
+    if not data then
+        return "нет на сайте"
+    elseif data.kind == "barter" then
+        return "бартер"
+    elseif data.kind == "coming-soon" then
+        return "не оценён"
+    elseif data.kind == "uncertain" then
+        return "не подтверждена"
+    end
+    return "без цены"
+end
+
 --- Стрелка тренда с цветом. Пустая строка, если тренда нет.
 local function formatTrend(trend)
     if type(trend) ~= "string" or trend == "" then
@@ -320,8 +437,19 @@ end
 
 local TAG_NAME = "MM2ValueTag"
 
+-- Соединения ярлыков держим здесь, а не полем на самом объекте: Instance в
+-- Roblox не принимает произвольные свойства, попытка записать tag.__conn
+-- падает с «is not a valid member of TextButton».
+-- Слабые ключи, чтобы уничтоженный ярлык не держал запись вечно.
+local tagClicks = setmetatable({}, { __mode = "k" })
+
 local function buildTag(parent)
-    local frame = Instance.new("Frame")
+    -- TextButton, а не Frame: по нажатию открывается панель деталей.
+    -- Занимает левый нижний угол иконки; остальная площадь по-прежнему
+    -- принадлежит игровой кнопке, которая убирает предмет из оффера.
+    local frame = Instance.new("TextButton")
+    frame.Text = ""
+    frame.AutoButtonColor = false
     frame.Name = TAG_NAME
     frame.AnchorPoint = Vector2.new(0, 1)
     frame.Position = UDim2.new(0, 2, 1, -2)
@@ -440,7 +568,7 @@ local function paintTag(slot, data)
     if not data or data.kind ~= "number" or type(data.value) ~= "number" then
         valueLabel.Text = "?"
         valueLabel.TextColor3 = COLORS.unknown
-        metaLabel.Text = data and (data.gameRarity or "") or ""
+        metaLabel.Text = shortReason(data)
     else
         valueLabel.Text = formatValue(data.value)
         valueLabel.TextColor3 = COLORS.text
@@ -454,6 +582,16 @@ local function paintTag(slot, data)
         end
         metaLabel.Text = table.concat(parts, " ") .. formatTrend(data.trend)
     end
+
+    -- Пересоздаём обработчик: предмет в слоте меняется, а ярлык переиспользуется.
+    if tagClicks[tag] then
+        tagClicks[tag]:Disconnect()
+    end
+    local slotName = slot:FindFirstChild("ItemName")
+    local fallbackName = slotName and slotName.Label.Text or nil
+    tagClicks[tag] = tag.MouseButton1Click:Connect(function()
+        showDetails(data, fallbackName)
+    end)
 
     placeTag(slot, tag)
     tag.Visible = true
@@ -529,7 +667,18 @@ end
 -- Панель WindUI
 --============================================================================
 
-local UI = { panel = nil, window = nil, rows = {} }
+local UI = {
+    panel = nil,          -- панель итогов справа
+    window = nil,         -- окно настроек WindUI
+    rows = {},            -- строки итогов
+    details = nil,        -- панель деталей слева
+    detail_rows = {},     -- её строки «подпись - значение»
+    detail_title = nil,
+    detail_price = nil,
+    detail_trend = nil,
+    detail_origin = nil,
+    detail_aliases = nil,
+}
 
 local PANEL_NAME = "MM2ValuePanel"
 local PANEL_WIDTH = 248
@@ -579,44 +728,41 @@ local function buildRow(parent, order, caption, valueSize)
     return value
 end
 
---- Карточка в духе WindUI: скруглённый блок ElementBackground с отступами.
+--- Карточка тем же спрайтом, что и окно, только подсветкой вместо заливки.
+--- Возвращает слой контента: спрайт лежит отдельно и не участвует в раскладке.
 local function buildCard(parent, order, heightScale, heightOffset)
     local card = Instance.new("Frame")
     card.Name = "Card"
-    card.BackgroundColor3 = COLORS.surface
-    card.BorderSizePixel = 0
+    card.BackgroundTransparency = 1
     card.Size = UDim2.new(1, 0, heightScale or 0, heightOffset or 0)
     card.AutomaticSize = (heightScale == nil and heightOffset == nil)
         and Enum.AutomaticSize.Y or Enum.AutomaticSize.None
     card.LayoutOrder = order
     card.Parent = parent
 
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, RADIUS_ELEMENT)
-    corner.Parent = card
+    paintSurface(card, COLORS.surface, CARD_TRANSPARENCY, RADIUS_ELEMENT)
 
-    -- Именно кант отделяет карточку от чёрной панели: заливка даёт всего 1.34,
-    -- обводка - 4.90. Без неё карточка сливается с фоном.
-    local cardStroke = Instance.new("UIStroke")
-    cardStroke.Color = COLORS.stroke
-    cardStroke.Transparency = STROKE_TRANSPARENCY
-    cardStroke.Thickness = 1
-    cardStroke.Parent = card
+    local content = Instance.new("Frame")
+    content.Name = "CardContent"
+    content.BackgroundTransparency = 1
+    content.Size = UDim2.new(1, 0, 1, 0)
+    content.AutomaticSize = card.AutomaticSize
+    content.Parent = card
 
     local pad = Instance.new("UIPadding")
     pad.PaddingTop = UDim.new(0, 8)
     pad.PaddingBottom = UDim.new(0, 8)
     pad.PaddingLeft = UDim.new(0, 12)
     pad.PaddingRight = UDim.new(0, 12)
-    pad.Parent = card
+    pad.Parent = content
 
     local list = Instance.new("UIListLayout")
     list.FillDirection = Enum.FillDirection.Vertical
     list.SortOrder = Enum.SortOrder.LayoutOrder
     list.Padding = UDim.new(0, 2)
-    list.Parent = card
+    list.Parent = content
 
-    return card
+    return content
 end
 
 --- Панель живёт внутри TradeGUI, поэтому появляется и исчезает вместе с окном
@@ -630,38 +776,8 @@ local function buildTradePanel()
         old:Destroy()
     end
 
-    local panel = Instance.new("Frame")
-    panel.Name = PANEL_NAME
-    panel.AnchorPoint = Vector2.new(0, 0)
+    local panel, body = buildSurfaceWindow(TradeFrame, PANEL_NAME, PANEL_WIDTH, COLORS.bg, 0)
     panel.Position = UDim2.new(1, 10, 0, 0)
-    panel.Size = UDim2.new(0, PANEL_WIDTH, 1, 0)
-    panel.BackgroundColor3 = COLORS.bg
-    panel.BorderSizePixel = 0
-    panel.ZIndex = 5
-    panel.Parent = TradeFrame
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, RADIUS_WINDOW)
-    corner.Parent = panel
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = COLORS.stroke
-    stroke.Transparency = STROKE_TRANSPARENCY
-    stroke.Thickness = 1
-    stroke.Parent = panel
-
-    local pad = Instance.new("UIPadding")
-    pad.PaddingTop = UDim.new(0, 12)
-    pad.PaddingBottom = UDim.new(0, 12)
-    pad.PaddingLeft = UDim.new(0, 12)
-    pad.PaddingRight = UDim.new(0, 12)
-    pad.Parent = panel
-
-    local list = Instance.new("UIListLayout")
-    list.FillDirection = Enum.FillDirection.Vertical
-    list.SortOrder = Enum.SortOrder.LayoutOrder
-    list.Padding = UDim.new(0, 8)
-    list.Parent = panel
 
     -- Шапка. Иконка и текст в одной строке, обе выровнены по центру.
     local header = Instance.new("Frame")
@@ -669,7 +785,7 @@ local function buildTradePanel()
     header.BackgroundTransparency = 1
     header.Size = UDim2.new(1, 0, 0, 24)
     header.LayoutOrder = 1
-    header.Parent = panel
+    header.Parent = body
 
     local dot = Instance.new("Frame")
     dot.Name = "Dot"
@@ -694,11 +810,11 @@ local function buildTradePanel()
     title.TextColor3 = COLORS.text
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.TextYAlignment = Enum.TextYAlignment.Center
-    title.Text = "MM2Value"
+    title.Text = "OxyLab"
     title.Parent = header
 
     -- Карточка с итогами
-    local totalsCard = buildCard(panel, 2, 0, 104)
+    local totalsCard = buildCard(body, 2, 0, 104)
     UI.rows.mine = buildRow(totalsCard, 1, "Ты", 18)
     UI.rows.theirs = buildRow(totalsCard, 2, "Оппонент", 18)
 
@@ -727,12 +843,12 @@ local function buildTradePanel()
     verdict.TextYAlignment = Enum.TextYAlignment.Top
     verdict.TextWrapped = true
     verdict.Text = "Открой трейд."
-    verdict.Parent = panel
+    verdict.Parent = body
     UI.rows.verdict = verdict
 
     -- Карточка с неучтённым. Растягивается на остаток высоты панели.
     -- -208 = -190 минус 18px, на которые подрос блок вердикта.
-    local exCard = buildCard(panel, 4, 1, -208)
+    local exCard = buildCard(body, 4, 1, -208)
 
     local exHeader = Instance.new("Frame")
     exHeader.Name = "ExcludedHeader"
@@ -821,6 +937,267 @@ local function positionPanel()
         -- Совсем узкий экран: кладём панель поверх правого края трейда.
         panel.Position = UDim2.new(1, -PANEL_WIDTH, 0, 0)
     end
+end
+
+--============================================================================
+-- Панель деталей предмета (слева, по нажатию на ярлык)
+--============================================================================
+
+local DETAILS_NAME = "MM2ValueDetails"
+local DETAILS_WIDTH = 264
+
+--- Ставит панель слева от всего окна трейда, включая инвентарь.
+--- Инвентарь шире и левее самого фрейма трейда, поэтому опираться только на
+--- TradeFrame нельзя - панель легла бы поверх списка предметов.
+local function positionDetails()
+    local panel = UI.details
+    local camera = workspace.CurrentCamera
+    if not panel or not TradeFrame or not camera then
+        return
+    end
+
+    local tradeLeft = TradeFrame.AbsolutePosition.X
+    local leftMost = tradeLeft
+    local container = TradeFrame.Parent
+    if container then
+        for _, sibling in ipairs(container:GetChildren()) do
+            if sibling:IsA("GuiObject") and sibling.Visible and sibling.AbsoluteSize.X > 0 then
+                leftMost = math.min(leftMost, sibling.AbsolutePosition.X)
+            end
+        end
+    end
+
+    local offset = (leftMost - tradeLeft) - 10 - DETAILS_WIDTH
+    -- Не даём уехать за левый край экрана.
+    if tradeLeft + offset < 0 then
+        offset = -tradeLeft
+    end
+    panel.Position = UDim2.new(0, offset, 0, 0)
+end
+
+--- Строка «подпись — значение» для панели деталей.
+local function detailRow(parent, order, caption)
+    local value = buildRow(parent, order, caption, 15)
+    value.Font = Enum.Font.GothamMedium
+    return value
+end
+
+local function buildDetailsPanel()
+    if not TradeFrame then
+        return nil
+    end
+    local old = TradeFrame:FindFirstChild(DETAILS_NAME)
+    if old then
+        old:Destroy()
+    end
+
+    local panel, body = buildSurfaceWindow(TradeFrame, DETAILS_NAME, DETAILS_WIDTH, COLORS.bg, 0)
+    panel.Position = UDim2.new(0, -DETAILS_WIDTH - 10, 0, 0)
+    panel.Visible = false
+
+    -- Шапка: имя предмета и крестик. Крестик фиксированной ширины и не
+    -- сжимается, длинное имя обрезается вместо того, чтобы его выдавить.
+    local header = Instance.new("Frame")
+    header.Name = "Header"
+    header.BackgroundTransparency = 1
+    header.Size = UDim2.new(1, 0, 0, 24)
+    header.LayoutOrder = 1
+    header.Parent = body
+
+    local title = Instance.new("TextLabel")
+    title.Name = "Title"
+    title.BackgroundTransparency = 1
+    title.AnchorPoint = Vector2.new(0, 0.5)
+    title.Position = UDim2.new(0, 0, 0.5, 0)
+    title.Size = UDim2.new(1, -28, 1, 0)
+    title.Font = Enum.Font.GothamBold
+    title.TextSize = 16
+    title.TextColor3 = COLORS.text
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.TextYAlignment = Enum.TextYAlignment.Center
+    title.TextTruncate = Enum.TextTruncate.AtEnd
+    title.Text = "—"
+    title.Parent = header
+    UI.detail_title = title
+
+    local close = Instance.new("TextButton")
+    close.Name = "Close"
+    close.AnchorPoint = Vector2.new(1, 0.5)
+    close.Position = UDim2.new(1, 0, 0.5, 0)
+    close.Size = UDim2.new(0, 22, 0, 22)
+    close.BackgroundTransparency = 1
+    close.Font = Enum.Font.GothamBold
+    close.TextSize = 18
+    close.TextColor3 = COLORS.muted
+    close.Text = "×"
+    close.AutoButtonColor = false
+    close.Parent = header
+    close.MouseButton1Click:Connect(function()
+        panel.Visible = false
+    end)
+
+    -- Цена и тренд крупно: ради тренда всё и затевалось.
+    local priceCard = buildCard(body, 2, 0, 96)
+
+    local price = Instance.new("TextLabel")
+    price.Name = "Price"
+    price.BackgroundTransparency = 1
+    price.Size = UDim2.new(1, 0, 0, 40)
+    price.LayoutOrder = 1
+    price.Font = Enum.Font.GothamBold
+    price.TextSize = 34
+    price.TextColor3 = COLORS.text
+    price.TextXAlignment = Enum.TextXAlignment.Left
+    price.TextYAlignment = Enum.TextYAlignment.Center
+    price.TextTruncate = Enum.TextTruncate.AtEnd
+    price.Text = "—"
+    price.Parent = priceCard
+    UI.detail_price = price
+
+    local trend = Instance.new("TextLabel")
+    trend.Name = "Trend"
+    trend.BackgroundTransparency = 1
+    trend.Size = UDim2.new(1, 0, 0, 24)
+    trend.LayoutOrder = 2
+    trend.Font = Enum.Font.GothamBold
+    trend.TextSize = 20
+    trend.TextColor3 = COLORS.muted
+    trend.TextXAlignment = Enum.TextXAlignment.Left
+    trend.TextYAlignment = Enum.TextYAlignment.Center
+    trend.RichText = true
+    trend.Text = "—"
+    trend.Parent = priceCard
+    UI.detail_trend = trend
+
+    -- Остальные поля
+    local infoCard = buildCard(body, 3, 0, 190)
+    UI.detail_rows = {
+        demand = detailRow(infoCard, 1, "Спрос"),
+        rarity = detailRow(infoCard, 2, "Редкость сайта"),
+        stability = detailRow(infoCard, 3, "Стабильность"),
+        flip = detailRow(infoCard, 4, "Перепродажа"),
+        rise = detailRow(infoCard, 5, "Шанс роста"),
+        gameRarity = detailRow(infoCard, 6, "Класс в игре"),
+    }
+
+    local originCard = buildCard(body, 4)
+
+    local originTitle = Instance.new("TextLabel")
+    originTitle.Name = "OriginTitle"
+    originTitle.BackgroundTransparency = 1
+    originTitle.Size = UDim2.new(1, 0, 0, 18)
+    originTitle.LayoutOrder = 1
+    originTitle.Font = Enum.Font.GothamBold
+    originTitle.TextSize = 13
+    originTitle.TextColor3 = COLORS.muted
+    originTitle.TextXAlignment = Enum.TextXAlignment.Left
+    originTitle.Text = "Откуда"
+    originTitle.Parent = originCard
+
+    local origin = Instance.new("TextLabel")
+    origin.Name = "Origin"
+    origin.BackgroundTransparency = 1
+    origin.Size = UDim2.new(1, 0, 0, 0)
+    origin.AutomaticSize = Enum.AutomaticSize.Y
+    origin.LayoutOrder = 2
+    origin.Font = Enum.Font.Gotham
+    origin.TextSize = 14
+    origin.TextColor3 = COLORS.text
+    origin.TextXAlignment = Enum.TextXAlignment.Left
+    origin.TextYAlignment = Enum.TextYAlignment.Top
+    origin.TextWrapped = true
+    origin.Text = "—"
+    origin.Parent = originCard
+    UI.detail_origin = origin
+
+    local aliases = Instance.new("TextLabel")
+    aliases.Name = "Aliases"
+    aliases.BackgroundTransparency = 1
+    aliases.Size = UDim2.new(1, 0, 0, 0)
+    aliases.AutomaticSize = Enum.AutomaticSize.Y
+    aliases.LayoutOrder = 3
+    aliases.Font = Enum.Font.Gotham
+    aliases.TextSize = 13
+    aliases.TextColor3 = COLORS.muted
+    aliases.TextXAlignment = Enum.TextXAlignment.Left
+    aliases.TextYAlignment = Enum.TextYAlignment.Top
+    aliases.TextWrapped = true
+    aliases.Text = ""
+    aliases.Parent = originCard
+    UI.detail_aliases = aliases
+
+    UI.details = panel
+    return panel
+end
+
+--- Наполняет и показывает панель. data = nil - предмет неизвестен.
+--- Переменная объявлена выше по файлу, здесь только присваивание.
+function showDetails(data, fallbackName)
+    if not UI.details then
+        return
+    end
+
+    UI.detail_title.Text = (data and data.name) or fallbackName or "Неизвестный предмет"
+
+    if data and data.kind == "number" and type(data.value) == "number" then
+        UI.detail_price.Text = formatValue(data.value)
+        UI.detail_price.TextColor3 = COLORS.text
+    else
+        UI.detail_price.Text = "?"
+        UI.detail_price.TextColor3 = COLORS.unknown
+    end
+
+    -- Тренд крупно: процент, абсолютное изменение и стрелка одним блоком.
+    local trendText = "нет данных"
+    local trendColor = COLORS.muted
+    if data and data.trend and data.trend ~= "" then
+        local num = tonumber((data.trend:gsub("[%%+]", "")))
+        if num and num ~= 0 then
+            trendColor = num > 0 and COLORS.up or COLORS.down
+            local arrow = num > 0 and "▲" or "▼"
+            trendText = arrow .. " " .. data.trend
+            if data.diff and data.diff ~= "" then
+                trendText = trendText .. "   (" .. data.diff .. ")"
+            end
+        else
+            trendText = "без изменений"
+        end
+    elseif data and data.kind == "barter" then
+        trendText = data.text or "цена бартером"
+        trendColor = COLORS.unknown
+    elseif data then
+        trendText = shortReason(data)
+        trendColor = COLORS.unknown
+    end
+    UI.detail_trend.Text = trendText
+    UI.detail_trend.TextColor3 = trendColor
+
+    local function put(key, raw, suffix)
+        local label = UI.detail_rows[key]
+        if not label then
+            return
+        end
+        local text = raw
+        if text == nil or text == "" then
+            text = "—"
+        elseif suffix then
+            text = text .. suffix
+        end
+        label.Text = tostring(text)
+    end
+
+    put("demand", data and data.demand, " / 10")
+    put("rarity", data and data.rarity, " / 10")
+    put("stability", data and data.stability)
+    put("flip", data and data.flip)
+    put("rise", data and data.rise, "%")
+    put("gameRarity", data and data.gameRarity)
+
+    UI.detail_origin.Text = (data and data.origin) or "неизвестно"
+    UI.detail_aliases.Text = (data and data.aliases) and ("Также зовут: " .. data.aliases) or ""
+
+    UI.details.Visible = true
+    positionDetails()
 end
 
 local function setExcludedList(entries)
@@ -1022,6 +1399,7 @@ local function onUpdateTrade(state)
     -- Позицию считаем здесь, а не при создании панели: на момент создания окно
     -- трейда ещё скрыто и его AbsoluteSize равен нулю.
     positionPanel()
+    positionDetails()
 
     local mineTotal, _, mineExcluded = summarise(mine.Offer)
     local theirTotal, _, theirExcluded = summarise(theirs.Offer)
@@ -1038,12 +1416,12 @@ local function buildWindow(WindUI)
     local stats = Values.stats or {}
 
     local Window = WindUI:CreateWindow({
-        Title = "MM2Value",
+        Title = "OxyLab",
         Icon = "gem",
-        Folder = "MM2Value",
+        Folder = "OxyLab",
         Author = "ценности Supreme Values",
         Topbar = { Height = 40, ButtonsType = "Mac" },
-        OpenButton = { Title = "MM2Value", Enabled = true, Draggable = true },
+        OpenButton = { Title = "OxyLab", Enabled = true, Draggable = true },
     })
     UI.window = Window
     Session.window = Window
@@ -1102,11 +1480,11 @@ local function buildWindow(WindUI)
             if fresh then
                 Values = fresh
                 WindUI:Notify({
-                    Title = "MM2Value",
+                    Title = "OxyLab",
                     Content = "Ценности перезагружены (" .. tostring(fresh.__source) .. ")",
                 })
             else
-                WindUI:Notify({ Title = "MM2Value", Content = "Не вышло: " .. tostring(err) })
+                WindUI:Notify({ Title = "OxyLab", Content = "Не вышло: " .. tostring(err) })
             end
         end,
     })
@@ -1139,10 +1517,14 @@ local function main()
     -- только показывает и прячет.
     -- Точка невозврата: всё, что могло помешать старту, уже проверено.
     -- Только теперь сносим предыдущий экземпляр.
-    teardown(rawget(_G, "MM2Value"))
+    teardown(rawget(_G, "OxyLab") or rawget(_G, "MM2Value"))
+    _G.OxyLab = Session
+    -- Прежнее имя оставлено намеренно: на него ссылаются README и уже
+    -- записанные команды проверки.
     _G.MM2Value = Session
 
     buildTradePanel()
+    buildDetailsPanel()
 
     for _, container in ipairs({ YourContainer, TheirContainer }) do
         for i = 1, 4 do
@@ -1274,6 +1656,12 @@ local function main()
     if camera then
         table.insert(Session.connections,
             camera:GetPropertyChangedSignal("ViewportSize"):Connect(positionPanel))
+    end
+
+    -- Открыть панель деталей без нажатия, для проверки:
+    --   _G.MM2Value.details("TravelerGunChroma", "Weapons")
+    Session.details = function(itemId, itemType)
+        showDetails(lookup(itemType or "Weapons", itemId), tostring(itemId))
     end
 
     log("оверлей активен, жду начала трейда")

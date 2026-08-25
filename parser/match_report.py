@@ -148,6 +148,11 @@ def sv_payload(hit: dict) -> dict:
         "stability": hit.get("stability", ""),
         "pctChange": hit.get("pctChange", ""),
         "diff": hit.get("diff", ""),
+        # Для панели деталей в игре.
+        "origin": hit.get("origin", ""),
+        "flippability": hit.get("flippability", ""),
+        "riseChance": hit.get("riseChance", ""),
+        "aliases": hit.get("aliases", ""),
     }
 
 
