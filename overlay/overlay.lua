@@ -19,7 +19,14 @@
 -- Настройки
 --============================================================================
 
+local SCRIPT_VERSION = "1.0"
+
 local CONFIG = {
+    -- Ссылка на сам скрипт, для кнопки «скопировать запуск».
+    SCRIPT_URL = "https://raw.githubusercontent.com/JUSTANAX/test/main/overlay/overlay.lua",
+
+    SHOW_DETAILS = true,
+
     -- Зеркало на GitHub. Если недоступно, оверлей молча падает на локальный
     -- файл - трейд не должен ломаться из-за сети.
     VALUES_URL = "https://raw.githubusercontent.com/JUSTANAX/test/main/data/mm2_values.json",
@@ -216,6 +223,14 @@ local function teardown(previous)
     end
     if previous.window then
         pcall(function() previous.window:Destroy() end)
+    end
+    -- Window:Destroy() разбирает содержимое окна, но ScreenGui-контейнеры
+    -- WindUI после него остаются, и каждый перезапуск оставлял на экране ещё
+    -- одно окно. Сносим ровно те контейнеры, которые появились при создании
+    -- НАШЕГО окна: чистить все подряд нельзя - у другого скрипта может быть
+    -- свой WindUI, и мы бы снесли его.
+    for _, gui in ipairs(previous.windUiGuis or {}) do
+        pcall(function() gui:Destroy() end)
     end
     -- Ярлыки принадлежат игровому GUI и переживают перезапуск скрипта,
     -- поэтому их надо снять явно.
@@ -678,6 +693,8 @@ local UI = {
     detail_trend = nil,
     detail_origin = nil,
     detail_aliases = nil,
+    status = nil,         -- абзац состояния в окне настроек
+    source = nil,         -- абзац источника данных
 }
 
 local PANEL_NAME = "MM2ValuePanel"
@@ -1133,7 +1150,7 @@ end
 --- Наполняет и показывает панель. data = nil - предмет неизвестен.
 --- Переменная объявлена выше по файлу, здесь только присваивание.
 function showDetails(data, fallbackName)
-    if not UI.details then
+    if not UI.details or not CONFIG.SHOW_DETAILS then
         return
     end
 
@@ -1415,6 +1432,16 @@ end
 local function buildWindow(WindUI)
     local stats = Values.stats or {}
 
+    -- Запоминаем, что лежало в контейнере интерфейсов ДО создания окна, чтобы
+    -- потом точно знать, какие ScreenGui породили именно мы.
+    local hostGui = (gethui and gethui()) or game:GetService("CoreGui")
+    local before = {}
+    if hostGui then
+        for _, g in ipairs(hostGui:GetChildren()) do
+            before[g] = true
+        end
+    end
+
     local Window = WindUI:CreateWindow({
         Title = "OxyLab",
         Icon = "gem",
@@ -1426,14 +1453,88 @@ local function buildWindow(WindUI)
     UI.window = Window
     Session.window = Window
 
-    -- Итоги теперь живут в самом окне трейда, здесь только настройки.
-    local SettingsTab = Window:Tab({
-        Title = "Настройки",
-        Icon = "settings",
+    -- Всё, что появилось в контейнере после CreateWindow, принадлежит нам.
+    --
+    -- Снимок отложенный: WindUI создаёт свои ScreenGui не в самом вызове
+    -- CreateWindow, и мгновенная проверка не видела ничего. Обычно список
+    -- остаётся пустым - при повторном запуске библиотека переиспользует уже
+    -- созданные контейнеры, и убирать нечего.
+    Session.windUiGuis = {}
+    if hostGui then
+        task.defer(function()
+            for _, g in ipairs(hostGui:GetChildren()) do
+                if not before[g] then
+                    table.insert(Session.windUiGuis, g)
+                end
+            end
+        end)
+    end
+
+    Window:Tag({ Title = "v" .. SCRIPT_VERSION, Color = COLORS.primary, Border = true })
+
+    -- Итоги живут в самом окне трейда, здесь только управление и данные.
+    -- Разделы и квадратные иконки - как в примере самой WindUI, чтобы окно
+    -- выглядело её родным, а не самоделкой.
+    local OverlaySection = Window:Section({ Title = "Оверлей" })
+    local DataSection = Window:Section({ Title = "Данные" })
+
+    --------------------------------------------------------------------
+    -- Обзор
+    --------------------------------------------------------------------
+    local OverviewTab = OverlaySection:Tab({
+        Title = "Обзор",
+        Desc = "Что сейчас загружено",
+        Icon = "solar:home-2-bold",
+        IconColor = COLORS.primary,
+        IconShape = "Square",
+        Border = true,
     })
 
-    SettingsTab:Toggle({
-        Title = "Показывать ярлыки на иконках",
+    OverviewTab:Section({ Title = "Состояние" })
+
+    UI.status = OverviewTab:Paragraph({
+        Title = "Ценности загружены",
+        Desc = string.format(
+            "Источник: %s\nОружия: %d   Петов: %d\nС числовой ценой: %d из %d",
+            tostring(Values.__source or "?"),
+            stats.weapons or 0, stats.pets or 0,
+            stats.priced or 0,
+            (stats.weapons or 0) + (stats.pets or 0)
+        ),
+    })
+
+    OverviewTab:Section({ Title = "Как пользоваться" })
+
+    OverviewTab:Paragraph({
+        Title = "Ярлык на иконке",
+        Desc = "Цена предмета в левом нижнем углу. Ниже — спрос, редкость "
+            .. "сайта и стрелка тренда. Нажми на ярлык, чтобы открыть подробности слева.",
+    })
+
+    OverviewTab:Paragraph({
+        Title = "Знак «?» и «≈»",
+        Desc = "«?» значит, что числовой цены нет: бартер, предмет не оценён "
+            .. "или совпадение ненадёжное. Такие предметы не идут в сумму, "
+            .. "поэтому итог помечается знаком «≈».",
+    })
+
+    --------------------------------------------------------------------
+    -- Отображение
+    --------------------------------------------------------------------
+    local ViewTab = OverlaySection:Tab({
+        Title = "Отображение",
+        Desc = "Что показывать в трейде",
+        Icon = "solar:square-transfer-horizontal-bold",
+        IconColor = COLORS.accent,
+        IconShape = "Square",
+        Border = true,
+    })
+
+    ViewTab:Section({ Title = "Элементы" })
+
+    ViewTab:Toggle({
+        Title = "Ярлыки на иконках",
+        Desc = "Цена и тренд поверх каждого предмета",
         Value = CONFIG.SHOW_TAGS,
         Callback = function(v)
             CONFIG.SHOW_TAGS = v
@@ -1451,8 +1552,9 @@ local function buildWindow(WindUI)
         end,
     })
 
-    SettingsTab:Toggle({
-        Title = "Показывать панель итогов в трейде",
+    ViewTab:Toggle({
+        Title = "Панель итогов справа",
+        Desc = "Суммы сторон, разница и список неучтённого",
         Value = true,
         Callback = function(v)
             if UI.panel then
@@ -1461,31 +1563,112 @@ local function buildWindow(WindUI)
         end,
     })
 
-    SettingsTab:Paragraph({
-        Title = "Источник данных",
+    ViewTab:Toggle({
+        Title = "Панель деталей слева",
+        Desc = "Открывается нажатием на ярлык предмета",
+        Value = true,
+        Callback = function(v)
+            CONFIG.SHOW_DETAILS = v
+            if not v and UI.details then
+                UI.details.Visible = false
+            end
+        end,
+    })
+
+    --------------------------------------------------------------------
+    -- Источник
+    --------------------------------------------------------------------
+    local SourceTab = DataSection:Tab({
+        Title = "Источник",
+        Desc = "Откуда берутся цены",
+        Icon = "solar:folder-with-files-bold",
+        IconColor = COLORS.accent,
+        IconShape = "Square",
+        Border = true,
+    })
+
+    SourceTab:Section({ Title = "Данные" })
+
+    UI.source = SourceTab:Paragraph({
+        Title = "Supreme Values",
         Desc = string.format(
-            "Ценности от: %s\nЗагружено из: %s\nОружия: %d, петов: %d\nС числовой ценой: %d, бартер: %d, без цены: %d",
+            "Цены от: %s\nЗагружено из: %s\nС ценой: %d   Бартер: %d   Без цены: %d",
             tostring(Values.sourceUpdatedIso or "неизвестно"),
             tostring(Values.__source or "?"),
-            stats.weapons or 0, stats.pets or 0,
             stats.priced or 0, stats.barter or 0, stats.noValue or 0
         ),
     })
 
-    SettingsTab:Button({
-        Title = "Перезагрузить ценности",
+    SourceTab:Button({
+        Title = "Перезагрузить цены",
         Icon = "refresh-cw",
         Callback = function()
             local fresh, err = loadValues()
             if fresh then
                 Values = fresh
+                local s = fresh.stats or {}
+                pcall(function()
+                    UI.source:SetDesc(string.format(
+                        "Цены от: %s\nЗагружено из: %s\nС ценой: %d   Бартер: %d   Без цены: %d",
+                        tostring(fresh.sourceUpdatedIso or "неизвестно"),
+                        tostring(fresh.__source or "?"),
+                        s.priced or 0, s.barter or 0, s.noValue or 0))
+                end)
                 WindUI:Notify({
                     Title = "OxyLab",
-                    Content = "Ценности перезагружены (" .. tostring(fresh.__source) .. ")",
+                    Content = "Цены обновлены (" .. tostring(fresh.__source) .. ")",
+                    Icon = "check",
                 })
             else
-                WindUI:Notify({ Title = "OxyLab", Content = "Не вышло: " .. tostring(err) })
+                WindUI:Notify({
+                    Title = "OxyLab",
+                    Content = "Не вышло: " .. tostring(err),
+                    Icon = "trash",
+                })
             end
+        end,
+    })
+
+    SourceTab:Section({ Title = "Что важно знать" })
+
+    SourceTab:Paragraph({
+        Title = "Цена есть не у всех",
+        Desc = "Около 44% каталога сайт оценивает бартером вроде «x4 T1 Legendaries». "
+            .. "Такие предметы честно показываются как «?» и не идут в сумму.",
+    })
+
+    --------------------------------------------------------------------
+    -- О скрипте
+    --------------------------------------------------------------------
+    local AboutTab = DataSection:Tab({
+        Title = "О скрипте",
+        Icon = "solar:info-square-bold",
+        IconColor = COLORS.muted,
+        IconShape = "Square",
+        Border = true,
+    })
+
+    AboutTab:Paragraph({
+        Title = "OxyLab   v" .. SCRIPT_VERSION,
+        Desc = "Оверлей ценностей Murder Mystery 2.\n\n"
+            .. "Сопоставление предметов сделано заранее на стороне ПК, "
+            .. "поэтому в игре цена берётся прямым доступом по ключу и "
+            .. "ничего не разбирается на лету.",
+    })
+
+    AboutTab:Button({
+        Title = "Скопировать ссылку на запуск",
+        Icon = "copy",
+        Callback = function()
+            local link = 'loadstring(game:HttpGet("' .. CONFIG.SCRIPT_URL .. '"))()'
+            local ok = pcall(function()
+                (setclipboard or toclipboard or set_clipboard)(link)
+            end)
+            WindUI:Notify({
+                Title = "OxyLab",
+                Content = ok and "Ссылка скопирована" or "Буфер обмена недоступен",
+                Icon = ok and "check" or "trash",
+            })
         end,
     })
 
@@ -1566,7 +1749,9 @@ local function main()
     end
 
     if not WindUI then
-        warnf("работаю без панели итогов, ярлыки на иконках при этом активны")
+        -- Панели живут в окне трейда и от WindUI не зависят: без него
+        -- пропадает только окно настроек.
+        warnf("окна настроек не будет; ярлыки, итоги и детали работают")
     end
 
     local tradeFolder = ReplicatedStorage:WaitForChild("Trade", 20)
