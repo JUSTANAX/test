@@ -210,22 +210,43 @@ local function trimZeros(s)
     return (s:gsub("%.?0+$", ""))
 end
 
---- 1500000 -> «1.5m», 27000 -> «27k», 0.002 -> «0.002»
+--- Разделяет тысячи запятыми: 220000 -> «220,000».
+--- Так же, как их печатает сам сайт.
+local function groupThousands(whole)
+    local sign, digits = whole:match("^(%-?)(%d+)$")
+    if not digits then
+        return whole
+    end
+    local out = digits:reverse():gsub("(%d%d%d)", "%1,"):reverse()
+    out = out:gsub("^,", "")
+    return sign .. out
+end
+
+--- Полное число без сокращений: 220000 -> «220,000», 0.002 -> «0.002».
+---
+--- Сокращений «220k» и «1.5m» намеренно нет: в трейде важна точная сумма,
+--- а «1.5m» скрывает разницу между 1 500 000 и 1 549 999.
 local function formatValue(v)
     if type(v) ~= "number" then
         return "?"
     end
-    local abs = math.abs(v)
-    if abs >= 1e6 then
-        return trimZeros(string.format("%.2f", v / 1e6)) .. "m"
-    elseif abs >= 1e3 then
-        return trimZeros(string.format("%.1f", v / 1e3)) .. "k"
-    elseif abs >= 1 then
-        return trimZeros(string.format("%.1f", v))
-    elseif abs > 0 then
-        return trimZeros(string.format("%.3f", v))
+    if v == 0 then
+        return "0"
     end
-    return "0"
+    local abs = math.abs(v)
+    if abs >= 1 then
+        -- Дробную часть показываем, только если она есть: цены вида 0.5
+        -- на сайте встречаются, но 220000.0 писать незачем.
+        local rounded = math.floor(v + 0.5)
+        if math.abs(v - rounded) < 1e-9 then
+            return groupThousands(tostring(rounded))
+        end
+        local whole = math.floor(math.abs(v))
+        local frac = trimZeros(string.format("%.2f", math.abs(v) - whole)):gsub("^0", "")
+        local sign = v < 0 and "-" or ""
+        return sign .. groupThousands(tostring(whole)) .. frac
+    end
+    return trimZeros(string.format("%.3f", v))
 end
 
 --============================================================================
@@ -240,7 +261,7 @@ local function buildTag(parent)
     local frame = Instance.new("Frame")
     frame.Name = TAG_NAME
     frame.AnchorPoint = Vector2.new(0, 1)
-    frame.Size = UDim2.new(1, -6, 0, 22)
+    frame.Size = UDim2.new(1, -6, 0, 13)
     frame.BackgroundTransparency = 1
     frame.BorderSizePixel = 0
     frame.ZIndex = 50
@@ -254,7 +275,10 @@ local function buildTag(parent)
     value.BackgroundTransparency = 1
     value.Size = UDim2.new(1, 0, 1, 0)
     value.Font = Enum.Font.GothamBold
-    value.TextSize = 18
+    -- Мелко намеренно: цена не должна перебивать саму иконку. Обводка при
+    -- этом остаётся полной - на светлых предметах мелкий текст без неё
+    -- пропал бы вовсе.
+    value.TextSize = 9
     value.TextColor3 = COLORS.value
     value.TextStrokeColor3 = COLORS.stroke
     value.TextStrokeTransparency = 0
@@ -375,7 +399,8 @@ local function buildOfferTotal(offer)
     label.Size = UDim2.new(0, TOTAL_WIDTH, 0, 26)
     label.BackgroundTransparency = 1
     label.Font = Enum.Font.GothamBold
-    label.TextSize = 22
+    -- Тоже чуть меньше прежнего: «299,250» шире, чем «299.2k».
+    label.TextSize = 19
     label.TextColor3 = COLORS.value
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.TextYAlignment = Enum.TextYAlignment.Center

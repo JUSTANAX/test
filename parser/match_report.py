@@ -93,6 +93,30 @@ def sv_display_name(game_key: str, item_name: str) -> tuple[str, bool]:
     return item_name, False
 
 
+def year_from_key(game_key: str) -> str:
+    """
+    Год из внутреннего ключа игры.
+
+    У петов поля year нет вовсе, а на сайте лежат разные цены по годам:
+    Blue Pumpkin 2018 стоит 220, а 2019 - единицу. Год при этом зашит в сам
+    ключ: BluePumpkin19, RedPumpkin2021. Без этого разбора все версии
+    сходились бы на одну цену - ошибка в 220 раз.
+
+    Ключ без цифр (BlueP, RedP) - это оригинальный выпуск, для него год
+    неизвестен, и подбирается он отдельно, самым ранним вариантом.
+    """
+    m = re.search(r"(\d{4})$", game_key)
+    if m:
+        year = int(m.group(1))
+        return str(year) if 2000 <= year <= 2100 else ""
+    m = re.search(r"(?<!\d)(\d{2})$", game_key)
+    if m:
+        year = int(m.group(1))
+        # 15..30 - это годы жизни игры; 8bit и подобное отсекаем.
+        return f"20{year:02d}" if 15 <= year <= 30 else ""
+    return ""
+
+
 def name_candidates(base: str, item_type: str, year: str, event: str) -> list[str]:
     """
     Варианты написания имени на сайте, от точного к общему.
@@ -289,17 +313,39 @@ def main() -> int:
         # Прежний фолбэк по всем категориям уводил пета в оружие: пет Santa
         # получал данные ножа Santa вместе с бартерным текстом «x3 T1 Commons».
         target_cat = "chromas" if is_chroma else "pets"
+
+        # Год у петов в поле не хранится - только в ключе (BluePumpkin19).
+        pet_year = g.get("year") or year_from_key(key)
+
         hit = by_cat_name.get((target_cat, c))
         if hit:
             rec["method"] = "имя+категория"
         else:
-            for v in name_candidates(name, "", g.get("year", ""), g.get("event", "")):
+            for v in name_candidates(name, "", pet_year, g.get("event", "")):
                 probe = by_cat_name.get((target_cat, canon(v)))
                 if probe:
                     hit = probe
                     rec["method"] = "имя+год"
                     rec["matchedVariant"] = v
                     break
+
+        # Ключ без года (BlueP, RedP) - это оригинальный выпуск. На сайте он
+        # лежит под самым ранним годом, поэтому берём его, а не первый
+        # попавшийся вариант: у Blue Pumpkin разброс от 220 до 1.
+        if not hit and not pet_year:
+            oldest = None
+            for (cat_, _), probe in by_cat_name.items():
+                if cat_ != target_cat:
+                    continue
+                m = re.match(r"^(.*?)\s+\((\d{4})\)$", probe.get("name") or "")
+                if m and canon(m.group(1)) == c:
+                    if oldest is None or m.group(2) < oldest[0]:
+                        oldest = (m.group(2), probe)
+            if oldest:
+                hit = oldest[1]
+                rec["method"] = "имя+ранний год"
+                rec["matchedVariant"] = oldest[1].get("name")
+
         if hit:
             rec.update(sv_payload(hit))
         else:
