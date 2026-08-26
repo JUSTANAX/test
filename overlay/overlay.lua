@@ -41,6 +41,21 @@ local COLORS = {
     unknown = Color3.fromHex("BFBFBF"),
 }
 
+-- Мультяшный жирный шрифт вместо прежнего GothamBold: тот выглядел
+-- канцелярски и с оформлением MM2 не сочетался.
+--
+-- Roblox разрешает только шрифты из своего списка, поэтому это не тот же
+-- шрифт, что на картинке-образце, а ближайший к нему по духу. Другие
+-- кандидаты, если понадобится переиграть: FredokaOne (круглее и читается
+-- мельче), Cartoon (роднее для MM2), Bangers (уже по ширине).
+local FONT = Enum.Font.LuckiestGuy
+
+-- Вынесено в настройки, потому что подбирается глазами. У LuckiestGuy буквы
+-- толще, чем у GothamBold, и на иконке при 9 пикселях цифры начинают
+-- слипаться - размер, скорее всего, придётся поднять.
+local TAG_TEXT_SIZE = 9
+local TOTAL_TEXT_SIZE = 19
+
 -- Объявляем заранее: заполняются в resolveTradeGui, но нужны функциям выше.
 local YourOffer, TheirOffer, YourContainer, TheirContainer
 -- Корень окна трейда. Нужен отдельно от офферов: по его Visible мы понимаем,
@@ -277,11 +292,11 @@ local function buildTag(parent)
     value.Name = "Value"
     value.BackgroundTransparency = 1
     value.Size = UDim2.new(1, 0, 1, 0)
-    value.Font = Enum.Font.GothamBold
+    value.Font = FONT
     -- Мелко намеренно: цена не должна перебивать саму иконку. Обводка при
     -- этом остаётся полной - на светлых предметах мелкий текст без неё
     -- пропал бы вовсе.
-    value.TextSize = 9
+    value.TextSize = TAG_TEXT_SIZE
     value.TextColor3 = COLORS.value
     value.TextStrokeColor3 = COLORS.stroke
     value.TextStrokeTransparency = 0
@@ -408,9 +423,9 @@ local function buildOfferTotal(offer)
     label.AnchorPoint = Vector2.new(0, 0.5)
     label.Size = UDim2.new(0, TOTAL_WIDTH, 0, 26)
     label.BackgroundTransparency = 1
-    label.Font = Enum.Font.GothamBold
+    label.Font = FONT
     -- Тоже чуть меньше прежнего: «299,250» шире, чем «299.2k».
-    label.TextSize = 19
+    label.TextSize = TOTAL_TEXT_SIZE
     label.TextColor3 = COLORS.value
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.TextYAlignment = Enum.TextYAlignment.Center
