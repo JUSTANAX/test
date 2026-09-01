@@ -278,12 +278,18 @@ local function buildTag(slot)
     return frame
 end
 
-local function paintSlot(slot, item)
+--- Рисует уже найденную цену. Возвращать её обратно не должна.
+---
+--- Раньше эта функция и искала цену, и рисовала, а сумма считалась по её
+--- результату. Из-за этого предмет, которому не нашлось кадра слота, выпадал
+--- из суммы: итог молча занижался и помечался значком «≈», хотя цена была
+--- известна. Теперь поиск цены живёт отдельно, и сумма от отрисовки не
+--- зависит вовсе.
+local function paintSlot(slot, value)
     if typeof(slot) ~= "Instance" then
-        return nil
+        return
     end
     local tag = slot:FindFirstChild(TAG_NAME) or buildTag(slot)
-    local value = lookup(item)
 
     if type(value) == "number" then
         tag.Value.Text = formatValue(value)
@@ -299,7 +305,6 @@ local function paintSlot(slot, item)
         tag.Potions.Text = ""
     end
     tag.Visible = true
-    return value
 end
 
 --============================================================================
@@ -424,8 +429,10 @@ local function repaint(pane, total)
     local sum, unknown, count = 0, 0, 0
     for _, item in pairs(items) do
         count = count + 1
-        local slot = map[item.unique]
-        local value = paintSlot(slot, item)
+        -- Цену ищем ВСЕГДА, даже если рисовать некуда: сумма по стороне не
+        -- должна зависеть от того, нашёлся ли кадр слота.
+        local value = lookup(item)
+        paintSlot(map[item.unique], value)
         if type(value) == "number" then
             sum = sum + value
         else
