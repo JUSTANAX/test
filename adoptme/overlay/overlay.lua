@@ -36,12 +36,25 @@ local LOCAL_FILE = "am_values.json"
 -- Шрифт и размеры вынесены сюда: подбираются глазами, а не расчётом.
 local FONT = Enum.Font.LuckiestGuy
 local TAG_TEXT_SIZE = 11
+local POTION_TEXT_SIZE = 10
 local TOTAL_TEXT_SIZE = 18
+
+-- Сколько зелий езды в одной единице цены.
+--
+-- Не подобрано, а взято из кода сайта: у него есть режим «Ride Pot», и
+-- пересчёт там ровно такой -
+--     parseFloat((Math.round(154 * v * 20) / 20).toFixed(2))
+-- то есть умножить на 154 и округлить до 0.05 зелья. Сходится и с ценой
+-- самого зелья в каталоге: 1 / 0.0065 = 153.8.
+local RIDE_POTION_FACTOR = 154
 
 local COLORS = {
     -- Оранжевый, как в MM2: цена лежит прямо на иконке, а иконки бывают и
     -- тёмными, и почти белыми, поэтому обводка чёрная и непрозрачная.
     value = Color3.fromHex("FF9D2E"),
+    -- Зелья - бледнее и того же семейства: второе число не должно спорить
+    -- с первым за внимание, но должно читаться как цена, а не как подпись.
+    potion = Color3.fromHex("FFD37A"),
     stroke = Color3.fromHex("000000"),
     unknown = Color3.fromHex("BFBFBF"),
 }
@@ -151,6 +164,14 @@ end
 --- Цены Adopt Me лежат в диапазоне от 0.0004 до нескольких десятков, поэтому
 --- фиксированной разрядности не годится: три знака превратили бы дешёвых
 --- питомцев в ноль, а шесть загромоздили бы дорогих.
+local function trimZeros(s)
+    if s:find("%.") then
+        s = s:gsub("0+$", "")
+        s = s:gsub("%.$", "")
+    end
+    return s
+end
+
 local function formatValue(v)
     if type(v) ~= "number" then
         return "?"
@@ -158,10 +179,20 @@ local function formatValue(v)
     if v == math.floor(v) and math.abs(v) < 1e9 then
         return string.format("%d", v)
     end
-    local s = string.format("%.4f", v)
-    s = s:gsub("0+$", "")
-    s = s:gsub("%.$", "")
-    return s
+    return trimZeros(string.format("%.4f", v))
+end
+
+--- Цена в зельях езды - ровно по формуле сайта.
+---
+--- math.floor(x + 0.5) - это округление половины ВВЕРХ, как Math.round в
+--- JavaScript. Обычное округление «к чётному» дало бы другую последнюю
+--- цифру, и наши числа разошлись бы с сайтом на шаг сетки в 0.05.
+local function formatPotions(v)
+    if type(v) ~= "number" then
+        return ""
+    end
+    local steps = math.floor(RIDE_POTION_FACTOR * v * 20 + 0.5)
+    return trimZeros(string.format("%.2f", steps / 20))
 end
 
 --============================================================================
@@ -216,24 +247,32 @@ local function buildTag(slot)
     frame.BackgroundTransparency = 1
     frame.AnchorPoint = Vector2.new(0, 1)
     frame.Position = UDim2.new(0, 3, 1, -3)
-    frame.Size = UDim2.new(1, -6, 0, TAG_TEXT_SIZE + 4)
+    -- Две строки: сверху цена в долях, снизу в зельях езды.
+    frame.Size = UDim2.new(1, -6, 0, TAG_TEXT_SIZE + POTION_TEXT_SIZE + 4)
     frame.ZIndex = 60
     frame.Parent = slot
 
-    local label = Instance.new("TextLabel")
-    label.Name = "Value"
-    label.BackgroundTransparency = 1
-    label.Size = UDim2.new(1, 0, 1, 0)
-    label.Font = FONT
-    label.TextSize = TAG_TEXT_SIZE
-    label.TextColor3 = COLORS.value
-    label.TextStrokeColor3 = COLORS.stroke
-    label.TextStrokeTransparency = 0
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.TextYAlignment = Enum.TextYAlignment.Center
-    label.TextTruncate = Enum.TextTruncate.AtEnd
-    label.ZIndex = 61
-    label.Parent = frame
+    local function line(name, size, color, order)
+        local label = Instance.new("TextLabel")
+        label.Name = name
+        label.BackgroundTransparency = 1
+        label.Size = UDim2.new(1, 0, 0, size + 2)
+        label.Position = UDim2.new(0, 0, 0, order * (TAG_TEXT_SIZE + 2))
+        label.Font = FONT
+        label.TextSize = size
+        label.TextColor3 = color
+        label.TextStrokeColor3 = COLORS.stroke
+        label.TextStrokeTransparency = 0
+        label.TextXAlignment = Enum.TextXAlignment.Left
+        label.TextYAlignment = Enum.TextYAlignment.Center
+        label.TextTruncate = Enum.TextTruncate.AtEnd
+        label.ZIndex = 61
+        label.Parent = frame
+        return label
+    end
+
+    line("Value", TAG_TEXT_SIZE, COLORS.value, 0)
+    line("Potions", POTION_TEXT_SIZE, COLORS.potion, 1)
 
     table.insert(Session.created, frame)
     return frame
@@ -249,11 +288,15 @@ local function paintSlot(slot, item)
     if type(value) == "number" then
         tag.Value.Text = formatValue(value)
         tag.Value.TextColor3 = COLORS.value
+        tag.Potions.Text = formatPotions(value)
     else
         -- Честный прочерк вместо выдуманного числа: предмета может не быть
         -- в каталоге (новый выпуск) или сайт мог не завести ему цену.
         tag.Value.Text = "?"
         tag.Value.TextColor3 = COLORS.unknown
+        -- Вторую строку не заполняем: пересчитывать нечего, а «?» дважды
+        -- только загромождает иконку.
+        tag.Potions.Text = ""
     end
     tag.Visible = true
     return value
@@ -396,7 +439,11 @@ local function repaint(pane, total)
             label.Text = ""
         else
             -- «≈» значит, что часть предметов без цены и сумма неполная.
+            -- Рядом с ником места хватает по ширине, но не по высоте, поэтому
+            -- здесь оба числа в одну строку через точку - в отличие от иконок,
+            -- где они стоят друг под другом.
             label.Text = (unknown > 0 and "≈" or "") .. formatValue(sum)
+                .. " · " .. formatPotions(sum)
         end
         -- Положение считаем каждый раз: ник меняется от трейда к трейду, а
         -- вместе с ним и ширина текста, от которой мы отступаем.
