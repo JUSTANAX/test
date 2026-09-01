@@ -43,16 +43,28 @@ def run(script: Path, args: list[str] | None = None) -> int:
     return subprocess.run(cmd, cwd=ROOT).returncode
 
 
+def say(*args) -> None:
+    """
+    Печать с немедленным сбросом буфера.
+
+    Обычный print буферизуется поблочно, когда вывод уходит в файл или в лог
+    сборки, а дочерние процессы пишут в тот же поток сразу. Из-за этого
+    заголовки шагов оказывались НИЖЕ вывода самих шагов, и лог прогона
+    читался задом наперёд.
+    """
+    print(*args, flush=True)
+
+
 def main() -> int:
     if not (ROOT / "data" / "game_items.json").exists():
-        print("ВНИМАНИЕ: нет data/game_items.json - шаг сведения упадёт.")
-        print("Запусти overlay/dump_items.lua из Madium, находясь в MM2,")
-        print("затем скопируй результат из Workspace в data/game_items.json.")
-        print()
+        say("ВНИМАНИЕ: нет data/game_items.json - шаг сведения упадёт.")
+        say("Запусти overlay/dump_items.lua из Madium, находясь в MM2,")
+        say("затем скопируй результат из Workspace в data/game_items.json.")
+        say()
 
-    print("=" * 64)
-    print("ШАГ 1/3: цены Supreme Values")
-    print("=" * 64)
+    say("=" * 64)
+    say("ШАГ 1/3: цены Supreme Values")
+    say("=" * 64)
 
     # Три источника по убыванию свежести. Каждый следующий пробуется, только
     # если предыдущий не отдал полный каталог; неполный никто не записывает.
@@ -65,32 +77,32 @@ def main() -> int:
     code = 1
     for i, (script, label) in enumerate(sources):
         if i > 0:
-            print()
-            print(f"Предыдущий источник не сработал. Пробую {label}.")
-            print()
+            say()
+            say(f"Предыдущий источник не сработал. Пробую {label}.")
+            say()
         code = run(script)
         if code == 0:
             break
 
     if code != 0:
-        print("\nНи один источник не отдал полный каталог.")
-        print("Прежние цены не тронуты - лучше устаревшие, чем неполные.")
+        say("\nНи один источник не отдал полный каталог.")
+        say("Прежние цены не тронуты - лучше устаревшие, чем неполные.")
         return code
 
     for i, (title, script) in enumerate(
         [("Сведение с игровой базой", PARSER / "match_report.py"),
          ("Сборка артефакта для игры", PARSER / "build_game_map.py")], start=2):
-        print()
-        print("=" * 64)
-        print(f"ШАГ {i}/3: {title}")
-        print("=" * 64)
+        say()
+        say("=" * 64)
+        say(f"ШАГ {i}/3: {title}")
+        say("=" * 64)
         code = run(script)
         if code != 0:
-            print(f"\nШаг {i} завершился с кодом {code}. Останавливаюсь.")
+            say(f"\nШаг {i} завершился с кодом {code}. Останавливаюсь.")
             return code
 
-    print("\nГотово. mm2_values.json обновлён.")
-    print("Если настроено GitHub-зеркало - не забудь запушить data/mm2_values.json.")
+    say("\nГотово. mm2_values.json обновлён.")
+    say("Если настроено GitHub-зеркало - не забудь запушить data/mm2_values.json.")
     return 0
 
 
