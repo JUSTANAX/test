@@ -87,6 +87,14 @@ local function teardown()
         end
     end
 
+    -- Отписываемся до удаления меток: иначе слушатели ника продолжат
+    -- дёргать расчёт для уже уничтоженных объектов.
+    for _, conn in pairs(old.connections or {}) do
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+
     for _, inst in pairs(old.created or {}) do
         if typeof(inst) == "Instance" and inst.Parent then
             inst:Destroy()
@@ -410,7 +418,7 @@ end
 local function main()
     teardown()
 
-    Session = { created = {}, patched = {}, stopped = false }
+    Session = { created = {}, patched = {}, connections = {}, stopped = false }
     _G.OxyLabAM = Session
 
     Values = loadValues()
@@ -442,9 +450,28 @@ local function main()
         if not label then
             return nil
         end
-        -- Ставим на место сразу: если трейда сейчас нет, перерисовки не
-        -- будет ещё долго, а метка уже висит на экране.
-        placeTotal(nameLabel, label)
+
+        -- Положение зависит от ШИРИНЫ ника, а игра меняет его когда захочет:
+        -- при начале трейда, при смене собеседника, и до трейда там вообще
+        -- висит заглушка. Разовый расчёт поэтому устаревает - привязываемся
+        -- к самому тексту.
+        local function reposition()
+            placeTotal(nameLabel, label)
+            -- TextBounds пересчитывается движком следующим кадром, поэтому
+            -- повторяем: иначе первое измерение придётся на старую ширину.
+            task.defer(function()
+                if not Session.stopped then
+                    placeTotal(nameLabel, label)
+                end
+            end)
+        end
+
+        for _, prop in ipairs({ "Text", "AbsoluteSize", "AbsolutePosition" }) do
+            table.insert(Session.connections,
+                nameLabel:GetPropertyChangedSignal(prop):Connect(reposition))
+        end
+        reposition()
+
         return { label = label, name = nameLabel }
     end
 
