@@ -1,0 +1,132 @@
+name: Обновление цен Adopt Me
+
+# Раз в 6 часов, как и у MM2, но на другой минуте: два прогона в одну минуту
+# дерутся за право запушить, и один из них уходит на повтор впустую.
+#
+# Почему шесть часов, а не чаще: amvgg правит цены поштучно и помечает
+# каждый предмет своей датой. За шесть часов мы отстаём максимум на шесть,
+# а сайт при этом получает четыре наших захода в сутки вместо двадцати
+# четырёх. Дешевле для него и достаточно для нас.
+on:
+  schedule:
+    - cron: "41 */6 * * *"   # 00:41, 06:41, 12:41, 18:41 UTC
+  workflow_dispatch:
+
+  # Правку самого конвейера проверяем сразу после пуша, а не через шесть
+  # часов вслепую. Фильтр по пути важен: бот коммитит только
+  # adoptme/data/am_values.json, поэтому его собственные коммиты этот
+  # триггер не поднимают и петли не будет.
+  push:
+    paths:
+      - ".github/workflows/update-adoptme.yml"
+      - "adoptme/parser/**"
+      - "adoptme/update.py"
+
+permissions:
+  contents: write
+
+# Отдельная группа от MM2: игры независимы, и очередь одной не должна
+# задерживать другую.
+concurrency:
+  group: update-adoptme
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Забрать репозиторий
+        uses: actions/checkout@v7
+
+      - name: Поставить Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # Зависимостей нет намеренно: весь конвейер Adopt Me обходится
+      # стандартной библиотекой. У MM2 иначе - там источник за Imperva, и
+      # нужен настоящий браузер через Playwright. Здесь ставить нечего,
+      # поэтому прогон занимает секунды, а не минуты.
+
+      - name: Собрать свежие цены
+        run: python adoptme/update.py
+
+      - name: Проверить, что артефакт не испортился
+        # Пояс поверх подтяжек: даже если предыдущий шаг отчитался об
+        # успехе, не коммитим файл, который явно сломан или похудел.
+        # Пороги взяты с запасом ВНИЗ от рабочих значений (1436 предметов,
+        # 816 питомцев, 9961 значение), чтобы обычные колебания каталога не
+        # роняли сборку, но обвал был виден сразу.
+        run: |
+          python - <<'PY'
+          import json, pathlib, sys
+
+          p = pathlib.Path("adoptme/data/am_values.json")
+          if not p.exists():
+              sys.exit("нет adoptme/data/am_values.json")
+
+          d = json.loads(p.read_text(encoding="utf-8"))
+          stats = d.get("stats", {})
+          priced = stats.get("priced", 0)
+          pets = stats.get("pets", 0)
+          variants = stats.get("variants", 0)
+          computed = stats.get("computed", 0)
+
+          print(f"предметов={priced} питомцев={pets} значений={variants} счётных={computed}")
+          print(f"данные сайта от {(d.get('sourceUpdatedIso') or '?')[:10]}")
+
+          if priced < 1200:
+              sys.exit(f"предметов с ценой всего {priced}, ожидалось ~1436")
+          if pets < 700:
+              sys.exit(f"питомцев с ценой всего {pets}, ожидалось ~816")
+          if variants < 8000:
+              sys.exit(f"значений всего {variants}, ожидалось ~9961")
+
+          # Счётные варианты - это девять состояний из двенадцати. Если их
+          # ноль, значит не нашлась таблица коэффициентов в бандле сайта, и
+          # питомцы без зелий остались бы без цены. Каталог при этом
+          # выглядит целым, поэтому проверяем отдельно.
+          if computed < 5000:
+              sys.exit(f"счётных вариантов всего {computed}, ожидалось ~6719 - "
+                       f"похоже, не нашлась таблица коэффициентов")
+
+          if not d.get("items"):
+              sys.exit("нет items")
+          PY
+
+      - name: Закоммитить, если что-то изменилось
+        # Публикация с повторами и rebase. Голый push здесь ломается: если в
+        # тот же момент пушит человек или накладывается прогон MM2, он
+        # отклоняется как non-fast-forward и вся сборка краснеет, хотя цены
+        # уже собраны и проверены.
+        run: |
+          if git diff --quiet -- adoptme/data/am_values.json; then
+            echo "Цены не изменились, коммит не нужен."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add adoptme/data/am_values.json
+          git commit -m "Свежие цены Adopt Me $(date -u +%Y-%m-%d)"
+
+          for attempt in 1 2 3; do
+            git pull --rebase origin "${GITHUB_REF_NAME}" || {
+              echo "попытка $attempt: rebase не удался"
+              git rebase --abort || true
+              sleep 5
+              continue
+            }
+            if git push origin "HEAD:${GITHUB_REF_NAME}"; then
+              echo "Опубликовано с попытки $attempt."
+              exit 0
+            fi
+            echo "попытка $attempt: push отклонён, повторяю"
+            sleep 5
+          done
+
+          echo "Не удалось опубликовать за 3 попытки."
+          echo "Цены собраны и проверены, но остались только в этом прогоне."
+          exit 1
