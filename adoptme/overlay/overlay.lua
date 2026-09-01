@@ -418,6 +418,9 @@ local function buildTotal(nameLabel, id)
     label.TextColor3 = COLORS.value
     label.TextStrokeColor3 = COLORS.stroke
     label.TextStrokeTransparency = 0
+    -- Итог - одна метка, а покрасить надо только часть строки: доли
+    -- оранжевым, зелья пурпурным. RichText для этого и нужен.
+    label.RichText = true
     label.TextXAlignment = Enum.TextXAlignment.Right
     label.TextYAlignment = Enum.TextYAlignment.Center
     label.Text = ""
@@ -463,8 +466,16 @@ local function repaint(pane, total)
             -- Рядом с ником места хватает по ширине, но не по высоте, поэтому
             -- здесь оба числа в одну строку через точку - в отличие от иконок,
             -- где они стоят друг под другом.
-            label.Text = (unknown > 0 and "≈" or "") .. formatValue(sum)
-                .. " · " .. formatPotions(sum)
+            --
+            -- Цвет зелий тот же, что на иконках, но метка одна, а RichText -
+            -- единственный способ покрасить часть строки. Содержимое только
+            -- из цифр и точки, поэтому экранировать нечего.
+            label.Text = string.format(
+                "%s%s<font color=\"#%s\"> · %s</font>",
+                unknown > 0 and "≈" or "",
+                formatValue(sum),
+                COLORS.potion:ToHex(),
+                formatPotions(sum))
         end
         -- Положение считаем каждый раз: ник меняется от трейда к трейду, а
         -- вместе с ним и ширина текста, от которой мы отступаем.
