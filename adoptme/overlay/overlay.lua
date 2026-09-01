@@ -285,6 +285,10 @@ local function placeTotal(nameLabel, label)
     if not parent then
         return
     end
+    -- Где раскладка, там наши координаты всё равно ничего не решают.
+    if parent:FindFirstChildWhichIsA("UIListLayout") then
+        return
+    end
 
     local pos, size, bounds = nameLabel.AbsolutePosition, nameLabel.AbsoluteSize, nameLabel.TextBounds
     local textLeft
@@ -322,8 +326,27 @@ local function buildTotal(nameLabel, id)
     local label = Instance.new("TextLabel")
     label.Name = name
     label.BackgroundTransparency = 1
-    label.AnchorPoint = Vector2.new(1, 0.5)
-    label.Size = UDim2.new(0, 150, 0, TOTAL_TEXT_SIZE + 6)
+
+    -- Два разных способа встать на место, и выбор не от вкуса.
+    --
+    -- На экране торга рамка имени содержит UIListLayout: она сама
+    -- раскладывает детей и ЛЮБУЮ заданную Position перетирает. Спорить с ней
+    -- бесполезно - надо занять место в очереди. LayoutOrder на единицу
+    -- меньше, чем у ника, ставит итог прямо перед ним; AutomaticSize нужен,
+    -- чтобы метка занимала ширину текста, а не резервировала фиксированные
+    -- 150 пикселей - именно этот резерв и отодвигал число от ника.
+    --
+    -- На экране подтверждения раскладки нет, и там работает обычный расчёт
+    -- координат в placeTotal.
+    local layout = nameLabel.Parent:FindFirstChildWhichIsA("UIListLayout")
+    if layout then
+        label.AutomaticSize = Enum.AutomaticSize.X
+        label.Size = UDim2.new(0, 0, 0, math.max(nameLabel.AbsoluteSize.Y, TOTAL_TEXT_SIZE + 6))
+        label.LayoutOrder = nameLabel.LayoutOrder - 1
+    else
+        label.AnchorPoint = Vector2.new(1, 0.5)
+        label.Size = UDim2.new(0, 150, 0, TOTAL_TEXT_SIZE + 6)
+    end
     label.Font = FONT
     label.TextSize = TOTAL_TEXT_SIZE
     label.TextColor3 = COLORS.value
