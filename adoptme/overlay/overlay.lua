@@ -259,6 +259,42 @@ end
 ---
 --- Кладём её СОСЕДОМ имени, а не внутрь: NameLabel игра переписывает при
 --- каждом обновлении, и всё, что лежит внутри, рискует быть снесённым.
+-- Зазор между итогом и ником.
+local TOTAL_GAP = 8
+
+--- Ставит итог вплотную слева от НИКА - по тексту, а не по рамке метки.
+---
+--- Рамка имени шире надписи и у сторон выровнена по-разному: у своей стороны
+--- текст прижат влево, у собеседника вправо. Если считать от рамки, с одной
+--- стороны получится отступ в пять пикселей, а с другой в семьдесят - ровно
+--- это и разъехалось на скриншоте. TextBounds даёт фактическую ширину
+--- отрисованного текста, и от неё отступ выходит одинаковым.
+local function placeTotal(nameLabel, label)
+    if typeof(nameLabel) ~= "Instance" or typeof(label) ~= "Instance" then
+        return
+    end
+    local parent = label.Parent
+    if not parent then
+        return
+    end
+
+    local pos, size, bounds = nameLabel.AbsolutePosition, nameLabel.AbsoluteSize, nameLabel.TextBounds
+    local textLeft
+    if nameLabel.TextXAlignment == Enum.TextXAlignment.Right then
+        textLeft = pos.X + size.X - bounds.X
+    elseif nameLabel.TextXAlignment == Enum.TextXAlignment.Center then
+        textLeft = pos.X + (size.X - bounds.X) / 2
+    else
+        textLeft = pos.X
+    end
+
+    -- Переводим в координаты родителя: Position задаётся относительно него.
+    label.AnchorPoint = Vector2.new(1, 0.5)
+    label.Position = UDim2.new(
+        0, (textLeft - TOTAL_GAP) - parent.AbsolutePosition.X,
+        0, (pos.Y + size.Y / 2) - parent.AbsolutePosition.Y)
+end
+
 local function buildTotal(nameLabel)
     if typeof(nameLabel) ~= "Instance" or not nameLabel.Parent then
         return nil
@@ -271,10 +307,7 @@ local function buildTotal(nameLabel)
     local label = Instance.new("TextLabel")
     label.Name = TOTAL_NAME
     label.BackgroundTransparency = 1
-    label.AnchorPoint = Vector2.new(1, 0)
-    label.Position = UDim2.new(
-        nameLabel.Position.X.Scale, nameLabel.Position.X.Offset,
-        nameLabel.Position.Y.Scale, nameLabel.Position.Y.Offset + nameLabel.AbsoluteSize.Y - 4)
+    label.AnchorPoint = Vector2.new(1, 0.5)
     label.Size = UDim2.new(0, 150, 0, TOTAL_TEXT_SIZE + 6)
     label.Font = FONT
     label.TextSize = TOTAL_TEXT_SIZE
@@ -295,7 +328,8 @@ end
 -- Перерисовка панели
 --============================================================================
 
-local function repaint(pane, totalLabel)
+--- total = { label = метка итога, name = метка ника } либо nil.
+local function repaint(pane, total)
     if type(pane) ~= "table" then
         return
     end
@@ -314,13 +348,17 @@ local function repaint(pane, totalLabel)
         end
     end
 
-    if totalLabel and totalLabel.Parent then
+    local label = total and total.label
+    if label and label.Parent then
         if count == 0 then
-            totalLabel.Text = ""
+            label.Text = ""
         else
             -- «≈» значит, что часть предметов без цены и сумма неполная.
-            totalLabel.Text = (unknown > 0 and "≈" or "") .. formatValue(sum)
+            label.Text = (unknown > 0 and "≈" or "") .. formatValue(sum)
         end
+        -- Положение считаем каждый раз: ник меняется от трейда к трейду, а
+        -- вместе с ним и ширина текста, от которой мы отступаем.
+        placeTotal(total.name, label)
     end
 end
 
@@ -392,14 +430,19 @@ local function main()
 
     Session.app = app
 
-    local myTotal = buildTotal(app.negotiation_my_name_label)
-    local theirTotal = buildTotal(app.negotiation_partner_name_label)
+    local function totalFor(nameLabel)
+        local label = buildTotal(nameLabel)
+        return label and { label = label, name = nameLabel } or nil
+    end
+
+    local myTotal = totalFor(app.negotiation_my_name_label)
+    local theirTotal = totalFor(app.negotiation_partner_name_label)
 
     -- У экрана подтверждения СВОИ метки имён (YouLabel / PartnerLabel), и
     -- сумма нужна там не меньше: это последний экран перед нажатием
     -- «Подтверждать», решение принимается именно на нём.
-    local myConfTotal = buildTotal(app.confirmation_my_name_label)
-    local theirConfTotal = buildTotal(app.confirmation_partner_name_label)
+    local myConfTotal = totalFor(app.confirmation_my_name_label)
+    local theirConfTotal = totalFor(app.confirmation_partner_name_label)
 
     -- Панелей четыре: две на этапе торга и две на подтверждении. Игра
     -- переключает между ними, и цены должны быть на обеих.
