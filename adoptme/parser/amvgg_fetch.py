@@ -74,6 +74,18 @@ VARIANT_FIELDS = {
 # Для непитомцев вариантов нет - одно значение на предмет.
 PLAIN_FIELDS = [("value", "demand"), ("regularValue", "regularDemand")]
 
+# Слот формулы -> наш ключ варианта. Три базовых значения (fr) сайт хранит
+# явно, остальные девять вычисляет.
+SLOT_TO_VARIANT = {
+    "NP": ("regular", "np"), "R": ("regular", "r"), "F": ("regular", "f"),
+    "NNP": ("neon", "np"), "NR": ("neon", "r"), "NF": ("neon", "f"),
+    "MNP": ("mega", "np"), "MR": ("mega", "r"), "MF": ("mega", "f"),
+}
+
+# Категория, у которой все двенадцать значений заданы вручную. Для неё
+# коэффициентов нет и считать ничего не надо.
+EXPLICIT_CATEGORY = 13
+
 
 # --------------------------------------------------------------------------
 # Загрузка
@@ -223,11 +235,114 @@ def clean_date(v) -> str | None:
     return v[2:] if v.startswith("$D") else v
 
 
-def normalize(raw: dict, category: str) -> dict:
+def find_coefficients(html: str) -> dict:
+    """
+    Таблица коэффициентов из бандла сайта.
+
+    ЗАЧЕМ ОНА. Явные цены сайт хранит только для трёх состояний из двенадцати
+    - «с полётом и ездой» у обычного, неона и меги. Остальные девять он
+    СЧИТАЕТ прямо в браузере, умножая базовую цену на коэффициент своей
+    категории. Без этой таблицы питомец без зелий остался бы без цены, а это
+    самое частое состояние в трейде.
+
+    Коэффициенты лежат в чанке обычным JSON (e.exports=JSON.parse('{"0":...')),
+    поэтому достаются простым запросом - браузер не нужен.
+    """
+    import re as _re
+
+    scripts = set(_re.findall(r'src="(/_next/static/[^"]+\.js)"', html))
+    scripts |= set(_re.findall(r'"(/_next/static/chunks/[^"]+?\.js)"', html))
+    # Сначала page-*: таблица лежит рядом с кодом страницы значений.
+    ordered = sorted(scripts, key=lambda s: (0 if "/page-" in s else 1, s))
+
+    for src in ordered:
+        try:
+            js = fetch(BASE + src)
+        except RuntimeError:
+            continue
+        if '"NNP"' not in js:
+            continue
+        for m in _re.finditer(r"JSON\.parse\('(\{.*?\})'\)", js):
+            try:
+                table = json.loads(m.group(1))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(table, dict) and table:
+                first = next(iter(table.values()))
+                if isinstance(first, dict) and "NNP" in first:
+                    print(f"      коэффициенты найдены в {src.rsplit('/', 1)[-1]}: "
+                          f"{len(table)} категорий")
+                    return table
+    print("      ВНИМАНИЕ: таблица коэффициентов не найдена")
+    print("      вычисляемые варианты (без зелий, только полёт, только езда) не появятся")
+    return {}
+
+
+def to_fixed(x: float, digits: int) -> float:
+    """
+    Округление как у JavaScript toFixed.
+
+    Не round(): тот в Python банковский и на «ровной половине» уводит к
+    чётному, из-за чего последняя цифра расходилась бы с сайтом.
+    """
+    from decimal import Decimal, ROUND_HALF_UP
+    q = Decimal(1).scaleb(-digits)
+    return float(Decimal(repr(x)).quantize(q, rounding=ROUND_HALF_UP))
+
+
+def computed_slots(raw: dict, coeffs: dict) -> dict[str, float]:
+    """
+    Девять вычисляемых состояний питомца - точно по формуле сайта.
+
+    Формула снята из его же кода, а не подобрана: проверена на пяти питомцах
+    пяти категорий, разброс цен в три порядка - совпало десять значений из
+    десяти.
+    """
+    cat = str(raw.get("category"))
+    c = coeffs.get(cat)
+    if not c:
+        return {}
+
+    reg = to_number(raw.get("regularValue")) or 0.0
+    neon = to_number(raw.get("neonValue")) or 0.0
+    mega = to_number(raw.get("megaValue")) or 0.0
+
+    # Разрядность зависит от масштаба цены: дешёвым предметам нужен
+    # четвёртый знак, иначе всё схлопнется в ноль.
+    d_reg = 3 if reg >= 0.0175 else 4
+    d_rest = 4
+
+    # У категории 11 дорогие предметы считаются по отдельному правилу,
+    # а неон и мега выше порога вообще не пересчитываются.
+    if cat == "11" and reg > 0.08:
+        return {
+            "NP": to_fixed(0.95 * reg, d_reg),
+            "R": to_fixed(0.975 * reg, d_reg),
+            "F": to_fixed(0.975 * reg, d_reg),
+            "NNP": to_fixed(neon * c["NNP"], d_rest),
+            "NR": neon if neon > 0.2 else to_fixed(neon * c["NR"], d_rest),
+            "NF": neon if neon > 0.2 else to_fixed(neon * c["NF"], d_rest),
+            "MNP": to_fixed(mega * c["MNP"], d_rest),
+            "MR": mega if mega > 0.9 else to_fixed(mega * c["MR"], d_rest),
+            "MF": mega if mega > 0.9 else to_fixed(mega * c["MF"], d_rest),
+        }
+
+    out = {}
+    for slot in SLOT_TO_VARIANT:
+        base = reg if slot in ("NP", "R", "F") else (neon if slot[0] == "N" else mega)
+        digits = d_reg if slot in ("NP", "R", "F") else d_rest
+        out[slot] = to_fixed(base * c[slot], digits)
+    return out
+
+
+def normalize(raw: dict, category: str, coeffs: dict | None = None) -> dict:
     name = raw.get("name")
     item = {
         "name": name,
         "category": category,
+        # Числовая категория сайта. Нужна не для красоты: по ней берётся
+        # строка коэффициентов, без неё вычисляемые варианты не собрать.
+        "siteCategory": raw.get("category"),
         "siteId": raw.get("id"),
         "origin": raw.get("origin") or "",
         "updatedAt": clean_date(raw.get("lastUpdatedAt")),
@@ -247,7 +362,33 @@ def normalize(raw: dict, category: str) -> dict:
             "value": value,
             "valueText": (raw.get(vf) or "") if isinstance(raw.get(vf), str) else "",
             "demand": demand,
+            "computed": False,
         }
+
+    # Досчитываем то, чего сайт не хранит. Помечаем computed=true - это не
+    # приближение и не догадка, это ровно те числа, что сайт показывает
+    # посетителю, но происхождение у них другое, и скрывать это незачем.
+    if coeffs and raw.get("category") != EXPLICIT_CATEGORY:
+        slots = computed_slots(raw, coeffs)
+        for slot, value in slots.items():
+            form, potion = SLOT_TO_VARIANT[slot]
+            key = f"{form}|{potion}"
+            existing = item["variants"].get(key)
+            if existing and existing.get("value") is not None:
+                continue                      # явное значение всегда главнее
+            if value is None:
+                continue
+            base = item["variants"].get(f"{form}|fr", {})
+            item["variants"][key] = {
+                "form": form,
+                "potions": potion,
+                "value": value,
+                "valueText": "",
+                # Спроса у вычисленных состояний сайт не заводит - наследуем
+                # от базового варианта той же формы.
+                "demand": base.get("demand", ""),
+                "computed": True,
+            }
 
     # Предметы без вариантов - одно значение.
     if not item["variants"]:
@@ -276,6 +417,7 @@ def main() -> int:
     per_category: dict[str, int] = {}
     newest: str | None = None
     failures: list[str] = []
+    coeffs: dict = {}
 
     print("=" * 70)
     print("ЦЕНЫ ADOPT ME С AMVGG.COM")
@@ -299,6 +441,12 @@ def main() -> int:
             failures.append(cat)
             continue
 
+        # Коэффициенты нужны только питомцам и только один раз за прогон.
+        if cat == "pets" and not coeffs:
+            print()
+            coeffs = find_coefficients(html)
+            print(f"      ", end="")
+
         # Берём самый крупный массив: на странице попадаются и служебные
         # списки вроде «похожие предметы», они всегда короче основного.
         key = max(arrays, key=lambda k: len(arrays[k]))
@@ -308,7 +456,7 @@ def main() -> int:
         for raw in arr:
             if not isinstance(raw, dict) or not raw.get("name"):
                 continue
-            it = normalize(raw, cat)
+            it = normalize(raw, cat, coeffs)
             # Ключ (категория, имя): одно имя может жить в разных разделах.
             items[f"{cat}|{it['name']}"] = it
             added += 1
@@ -336,6 +484,8 @@ def main() -> int:
     priced = sum(1 for it in items.values()
                  if any(v.get("value") is not None for v in it["variants"].values()))
     variants = sum(len(it["variants"]) for it in items.values())
+    computed = sum(1 for it in items.values()
+                   for v in it["variants"].values() if v.get("computed"))
 
     payload = {
         "source": "amvgg.com",
@@ -345,8 +495,10 @@ def main() -> int:
             "items": len(items),
             "priced": priced,
             "variants": variants,
+            "computed": computed,
             "perCategory": per_category,
         },
+        "coefficients": coeffs,
         "items": items,
     }
     OUT_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -356,6 +508,7 @@ def main() -> int:
     print(f"Предметов        : {len(items)}")
     print(f"  с ценой        : {priced}")
     print(f"Вариантов всего  : {variants}")
+    print(f"  из них счётных : {computed}  (по формуле сайта, не приближение)")
     print(f"Свежайшая правка : {newest}")
     print(f"Записано         : {OUT_FILE}")
     print("=" * 70)
