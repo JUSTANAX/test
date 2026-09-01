@@ -37,7 +37,10 @@ local LOCAL_FILE = "am_values.json"
 local FONT = Enum.Font.LuckiestGuy
 local TAG_TEXT_SIZE = 11
 local POTION_TEXT_SIZE = 10
-local TOTAL_TEXT_SIZE = 18
+local TOTAL_TEXT_SIZE = 16
+-- Вторая строка итога чуть мельче первой, как и на иконках: зелья -
+-- справочное число, доли главное.
+local TOTAL_POTION_SIZE = 14
 
 -- Сколько зелий езды в одной единице цены.
 --
@@ -406,9 +409,48 @@ local function buildTotal(nameLabel, id)
         return existing
     end
 
-    local label = Instance.new("TextLabel")
+    -- Две строки, как на иконках: доли сверху, зелья снизу.
+    --
+    -- Одной строкой «4.431 · 682.374» не помещается: рамка ника на экране
+    -- торга шириной 250 пикселей, а содержимое с иконкой, значком профиля и
+    -- самим ником занимает 319. Точные числа длиннее округлённых, и итог
+    -- заходил на середину окна. В две строки тот же текст занимает вдвое
+    -- меньше по ширине, а по высоте места хватает - строка 32 пикселя.
+    local label = Instance.new("Frame")
     label.Name = name
     label.BackgroundTransparency = 1
+    label.AutomaticSize = Enum.AutomaticSize.XY
+
+    local stack = Instance.new("UIListLayout")
+    stack.FillDirection = Enum.FillDirection.Vertical
+    stack.SortOrder = Enum.SortOrder.LayoutOrder
+    -- Выравнивание вправо всегда: рамка сжимается по содержимому, поэтому
+    -- видимой разницы для длинной строки нет, а короткая прижимается к
+    -- той же кромке, что и длинная.
+    stack.HorizontalAlignment = Enum.HorizontalAlignment.Right
+    stack.Parent = label
+
+    local function line(lineName, size, color, order)
+        local t = Instance.new("TextLabel")
+        t.Name = lineName
+        t.BackgroundTransparency = 1
+        t.AutomaticSize = Enum.AutomaticSize.XY
+        t.Size = UDim2.new(0, 0, 0, 0)
+        t.LayoutOrder = order
+        t.Font = FONT
+        t.TextSize = size
+        t.TextColor3 = color
+        t.TextStrokeColor3 = COLORS.stroke
+        t.TextStrokeTransparency = 0
+        t.TextXAlignment = Enum.TextXAlignment.Right
+        t.Text = ""
+        t.ZIndex = 41
+        t.Parent = label
+        return t
+    end
+
+    line("Value", TOTAL_TEXT_SIZE, COLORS.value, 1)
+    line("Potions", TOTAL_POTION_SIZE, COLORS.potion, 2)
 
     -- Два разных способа встать на место, и выбор не от вкуса.
     --
@@ -423,27 +465,11 @@ local function buildTotal(nameLabel, id)
     -- координат в placeTotal.
     local layout = nameLabel.Parent:FindFirstChildWhichIsA("UIListLayout")
     if layout then
-        label.AutomaticSize = Enum.AutomaticSize.X
-        label.Size = UDim2.new(0, 0, 0, math.max(nameLabel.AbsoluteSize.Y, TOTAL_TEXT_SIZE + 6))
         label.LayoutOrder = nameLabel.LayoutOrder - 1
     else
-        -- Тоже по ширине текста: рамка в фиксированные 150 пикселей торчала
-        -- за край панели даже тогда, когда само число помещалось.
-        label.AutomaticSize = Enum.AutomaticSize.X
         label.AnchorPoint = Vector2.new(1, 0.5)
-        label.Size = UDim2.new(0, 0, 0, TOTAL_TEXT_SIZE + 6)
     end
-    label.Font = FONT
-    label.TextSize = TOTAL_TEXT_SIZE
-    label.TextColor3 = COLORS.value
-    label.TextStrokeColor3 = COLORS.stroke
-    label.TextStrokeTransparency = 0
-    -- Итог - одна метка, а покрасить надо только часть строки: доли
-    -- оранжевым, зелья пурпурным. RichText для этого и нужен.
-    label.RichText = true
-    label.TextXAlignment = Enum.TextXAlignment.Right
-    label.TextYAlignment = Enum.TextYAlignment.Center
-    label.Text = ""
+    label.Size = UDim2.new(0, 0, 0, 0)
     label.ZIndex = 40
     label.Parent = nameLabel.Parent
 
@@ -480,22 +506,12 @@ local function repaint(pane, total)
     local label = total and total.label
     if label and label.Parent then
         if count == 0 then
-            label.Text = ""
+            label.Value.Text = ""
+            label.Potions.Text = ""
         else
             -- «≈» значит, что часть предметов без цены и сумма неполная.
-            -- Рядом с ником места хватает по ширине, но не по высоте, поэтому
-            -- здесь оба числа в одну строку через точку - в отличие от иконок,
-            -- где они стоят друг под другом.
-            --
-            -- Цвет зелий тот же, что на иконках, но метка одна, а RichText -
-            -- единственный способ покрасить часть строки. Содержимое только
-            -- из цифр и точки, поэтому экранировать нечего.
-            label.Text = string.format(
-                "%s%s<font color=\"#%s\"> · %s</font>",
-                unknown > 0 and "≈" or "",
-                formatValue(sum),
-                COLORS.potion:ToHex(),
-                formatPotions(sum))
+            label.Value.Text = (unknown > 0 and "≈" or "") .. formatValue(sum)
+            label.Potions.Text = formatPotions(sum)
         end
         -- Положение считаем каждый раз: ник меняется от трейда к трейду, а
         -- вместе с ним и ширина текста, от которой мы отступаем.
