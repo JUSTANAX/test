@@ -395,21 +395,28 @@ local function main()
     local myTotal = buildTotal(app.negotiation_my_name_label)
     local theirTotal = buildTotal(app.negotiation_partner_name_label)
 
+    -- У экрана подтверждения СВОИ метки имён (YouLabel / PartnerLabel), и
+    -- сумма нужна там не меньше: это последний экран перед нажатием
+    -- «Подтверждать», решение принимается именно на нём.
+    local myConfTotal = buildTotal(app.confirmation_my_name_label)
+    local theirConfTotal = buildTotal(app.confirmation_partner_name_label)
+
     -- Панелей четыре: две на этапе торга и две на подтверждении. Игра
     -- переключает между ними, и цены должны быть на обеих.
     patchPane(app.my_negotiation_offer_pane, myTotal, "мой оффер")
     patchPane(app.partner_negotiation_offer_pane, theirTotal, "оффер собеседника")
-    patchPane(app.my_confirmation_offer_pane, nil, "мой оффер (подтверждение)")
-    patchPane(app.partner_confirmation_offer_pane, nil, "оффер собеседника (подтверждение)")
+    patchPane(app.my_confirmation_offer_pane, myConfTotal, "мой оффер (подтверждение)")
+    patchPane(app.partner_confirmation_offer_pane, theirConfTotal,
+              "оффер собеседника (подтверждение)")
 
     -- Если трейд уже идёт, рисуем сразу, не дожидаясь следующего изменения.
-    repaint(app.my_negotiation_offer_pane, myTotal)
-    repaint(app.partner_negotiation_offer_pane, theirTotal)
-
     Session.repaint = function()
         repaint(app.my_negotiation_offer_pane, myTotal)
         repaint(app.partner_negotiation_offer_pane, theirTotal)
+        repaint(app.my_confirmation_offer_pane, myConfTotal)
+        repaint(app.partner_confirmation_offer_pane, theirConfTotal)
     end
+    Session.repaint()
 
     local stats = Values.stats or {}
     log(string.format(
