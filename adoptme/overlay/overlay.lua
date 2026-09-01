@@ -357,7 +357,7 @@ local function placeTotal(nameLabel, label)
     end
 
     local pos, size, bounds = nameLabel.AbsolutePosition, nameLabel.AbsoluteSize, nameLabel.TextBounds
-    local textLeft
+    local textLeft, textRight
     if nameLabel.TextXAlignment == Enum.TextXAlignment.Right then
         textLeft = pos.X + size.X - bounds.X
     elseif nameLabel.TextXAlignment == Enum.TextXAlignment.Center then
@@ -365,12 +365,29 @@ local function placeTotal(nameLabel, label)
     else
         textLeft = pos.X
     end
+    textRight = textLeft + bounds.X
 
-    -- Переводим в координаты родителя: Position задаётся относительно него.
-    label.AnchorPoint = Vector2.new(1, 0.5)
-    label.Position = UDim2.new(
-        0, (textLeft - TOTAL_GAP) - parent.AbsolutePosition.X,
-        0, (pos.Y + size.Y / 2) - parent.AbsolutePosition.Y)
+    local y = (pos.Y + size.Y / 2) - parent.AbsolutePosition.Y
+
+    -- Ставим итог ВНУТРЬ панели, а не наружу.
+    --
+    -- Раньше он всегда шёл слева от ника - и на экране подтверждения уезжал
+    -- за край: там ник левой стороны сам прижат к краю панели, свободного
+    -- места слева от него просто нет.
+    --
+    -- Сторону выбираем по выравниванию ника, потому что оно и означает, к
+    -- какому краю он прижат: текст влево - значит панель левая, растём
+    -- вправо; текст вправо - панель правая, растём влево. В обоих случаях
+    -- итог уходит к середине окна, где место есть всегда.
+    if nameLabel.TextXAlignment == Enum.TextXAlignment.Left then
+        label.AnchorPoint = Vector2.new(0, 0.5)
+        label.Position = UDim2.new(
+            0, (textRight + TOTAL_GAP) - parent.AbsolutePosition.X, 0, y)
+    else
+        label.AnchorPoint = Vector2.new(1, 0.5)
+        label.Position = UDim2.new(
+            0, (textLeft - TOTAL_GAP) - parent.AbsolutePosition.X, 0, y)
+    end
 end
 
 --- id обязателен и должен быть разным у сторон.
@@ -410,8 +427,11 @@ local function buildTotal(nameLabel, id)
         label.Size = UDim2.new(0, 0, 0, math.max(nameLabel.AbsoluteSize.Y, TOTAL_TEXT_SIZE + 6))
         label.LayoutOrder = nameLabel.LayoutOrder - 1
     else
+        -- Тоже по ширине текста: рамка в фиксированные 150 пикселей торчала
+        -- за край панели даже тогда, когда само число помещалось.
+        label.AutomaticSize = Enum.AutomaticSize.X
         label.AnchorPoint = Vector2.new(1, 0.5)
-        label.Size = UDim2.new(0, 150, 0, TOTAL_TEXT_SIZE + 6)
+        label.Size = UDim2.new(0, 0, 0, TOTAL_TEXT_SIZE + 6)
     end
     label.Font = FONT
     label.TextSize = TOTAL_TEXT_SIZE
