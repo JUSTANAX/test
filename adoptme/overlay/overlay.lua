@@ -295,17 +295,24 @@ local function placeTotal(nameLabel, label)
         0, (pos.Y + size.Y / 2) - parent.AbsolutePosition.Y)
 end
 
-local function buildTotal(nameLabel)
+--- id обязателен и должен быть разным у сторон.
+---
+--- На экране подтверждения обе метки имён лежат в ОДНОМ родителе
+--- (ConfirmationFrame). Пока имя метки итога было общим, поиск по родителю
+--- находил для второй стороны первую, и обе суммы схлопывались в одну -
+--- на экране это выглядело как один итог не на своём месте.
+local function buildTotal(nameLabel, id)
     if typeof(nameLabel) ~= "Instance" or not nameLabel.Parent then
         return nil
     end
-    local existing = nameLabel.Parent:FindFirstChild(TOTAL_NAME)
+    local name = TOTAL_NAME .. "_" .. id
+    local existing = nameLabel.Parent:FindFirstChild(name)
     if existing then
         return existing
     end
 
     local label = Instance.new("TextLabel")
-    label.Name = TOTAL_NAME
+    label.Name = name
     label.BackgroundTransparency = 1
     label.AnchorPoint = Vector2.new(1, 0.5)
     label.Size = UDim2.new(0, 150, 0, TOTAL_TEXT_SIZE + 6)
@@ -430,19 +437,25 @@ local function main()
 
     Session.app = app
 
-    local function totalFor(nameLabel)
-        local label = buildTotal(nameLabel)
-        return label and { label = label, name = nameLabel } or nil
+    local function totalFor(nameLabel, id)
+        local label = buildTotal(nameLabel, id)
+        if not label then
+            return nil
+        end
+        -- Ставим на место сразу: если трейда сейчас нет, перерисовки не
+        -- будет ещё долго, а метка уже висит на экране.
+        placeTotal(nameLabel, label)
+        return { label = label, name = nameLabel }
     end
 
-    local myTotal = totalFor(app.negotiation_my_name_label)
-    local theirTotal = totalFor(app.negotiation_partner_name_label)
+    local myTotal = totalFor(app.negotiation_my_name_label, "my")
+    local theirTotal = totalFor(app.negotiation_partner_name_label, "their")
 
     -- У экрана подтверждения СВОИ метки имён (YouLabel / PartnerLabel), и
     -- сумма нужна там не меньше: это последний экран перед нажатием
     -- «Подтверждать», решение принимается именно на нём.
-    local myConfTotal = totalFor(app.confirmation_my_name_label)
-    local theirConfTotal = totalFor(app.confirmation_partner_name_label)
+    local myConfTotal = totalFor(app.confirmation_my_name_label, "my")
+    local theirConfTotal = totalFor(app.confirmation_partner_name_label, "their")
 
     -- Панелей четыре: две на этапе торга и две на подтверждении. Игра
     -- переключает между ними, и цены должны быть на обеих.
